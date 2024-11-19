@@ -2,24 +2,23 @@ import axios from 'axios';
 import NodeCache from 'node-cache';
 import { logger } from '../utils/logger.js';
 import { RateLimiter } from '../utils/RateLimiter.js';
+import { DataManager } from './DataManager.js';
 
 export class APIHandler {
   constructor(avKey) {
     this.avKey = avKey;
-    this.cache = new NodeCache({ stdTTL: 300 }); // 5 minute cache
+    this.dataManager = new DataManager();
     this.rateLimiter = new RateLimiter(5, 60000); // 5 requests per minute
     this.baseURL = 'https://www.alphavantage.co/query';
   }
 
   async getMarketData(symbol, days = 100) {
-    const cacheKey = `market_data_${symbol}`;
-    
     try {
-      // Check cache first
-      const cached = this.cache.get(cacheKey);
-      if (cached) {
+      // Try to get data from cache first
+      const cachedData = await this.dataManager.getCachedData(symbol, 'daily');
+      if (cachedData) {
         logger.debug(`Using cached data for ${symbol}`);
-        return cached;
+        return cachedData;
       }
 
       // Fetch fresh data
@@ -80,13 +79,23 @@ export class APIHandler {
         throw new Error('No valid market data available');
       }
 
+      // Validate data
+      if (!this.dataManager.validateData(data[data.length - 1])) {
+        throw new Error('Invalid market data structure');
+      }
+
+      // Check for price anomalies
+      if (this.dataManager.detectPriceAnomalies(data)) {
+        logger.warn(`Price anomalies detected for ${symbol}`);
+      }
+
       // Add technical indicators
       const enrichedData = this.addTechnicalIndicators(data);
       
       logger.info(`Successfully retrieved ${enrichedData.length} days of data for ${symbol}`);
       
-      // Cache the results
-      this.cache.set(cacheKey, enrichedData);
+      // Cache the results with appropriate TTL
+      await this.dataManager.cacheData(symbol, enrichedData, 'daily');
       
       return enrichedData;
 

@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 import { MarketDataAPI } from './services/MarketDataAPI.js';
 import { TechnicalAnalysis } from './utils/TechnicalAnalysis.js';
 import { OpenAIAnalyzer } from './services/OpenAIAnalyzer.js';
+import { AnthropicAnalyzer } from './services/AnthropicAnalyzer.js';
 
 dotenv.config();
 
@@ -14,7 +15,8 @@ async function testConsolidatedAnalysis() {
         // Initialize with environment variables
         const marketDataAPI = new MarketDataAPI(process.env.ALPHA_VANTAGE_KEY);
         const technicalAnalysis = new TechnicalAnalysis();
-        const aiAnalyzer = new OpenAIAnalyzer(process.env.OPENAI_API_KEY);
+        const anthropicAnalyzer = new AnthropicAnalyzer(process.env.ANTHROPIC_API_KEY);
+        const openaiAnalyzer = new OpenAIAnalyzer(process.env.OPENAI_API_KEY);
 
         const symbol = 'AAPL';
         console.log(`\nAnalyzing ${symbol}:`);
@@ -28,9 +30,16 @@ async function testConsolidatedAnalysis() {
         console.log('\nRunning technical analysis...');
         const technicalData = technicalAnalysis.analyze(marketData);
         
-        // Get AI insights
+        // Get AI insights - try Anthropic first, fallback to OpenAI
         console.log('\nGetting AI insights...');
-        const aiAnalysis = await aiAnalyzer.analyzeStock(symbol, marketData, technicalData);
+        let aiAnalysis;
+        try {
+            aiAnalysis = await anthropicAnalyzer.analyzeStock(symbol, marketData, technicalData);
+            console.log('Using Anthropic Analysis');
+        } catch (error) {
+            console.log('Falling back to OpenAI Analysis');
+            aiAnalysis = await openaiAnalyzer.analyzeStock(symbol, marketData, technicalData);
+        }
 
         // Display results
         displayConsolidatedAnalysis({
@@ -38,7 +47,7 @@ async function testConsolidatedAnalysis() {
             marketData,
             analysis: {
                 technical: technicalData,
-                ai: aiAnalysis
+                ...aiAnalysis
             }
         });
 
@@ -50,98 +59,142 @@ async function testConsolidatedAnalysis() {
 function displayConsolidatedAnalysis(data) {
     console.log('\n═══════════════════════════════════════════');
     console.log('       CONSOLIDATED MARKET ANALYSIS         ');
-    console.log('═══════════════════════════════════════════');
+    console.log('═══════════════════════════════════════════\n');
 
-    // Data Freshness (from test-consolidated-analysis.js)
-    const now = new Date();
-    const dataDate = new Date(data.marketData[0].date);
-    const daysSinceUpdate = Math.floor((now - dataDate) / (1000 * 60 * 60 * 24));
+    // Data Freshness
+    const lastUpdate = new Date(data.marketData[0].date);
+    const daysSinceUpdate = Math.floor((new Date() - lastUpdate) / (1000 * 60 * 60 * 24));
     
-    console.log('\nData Freshness:');
+    console.log('Data Freshness:');
     console.log('───────────────────────────────────────');
-    console.log(`Latest Data: ${data.marketData[0].date}`);
+    console.log(`Latest Data: ${lastUpdate.toISOString().split('T')[0]}`);
     console.log(`Days Since Update: ${daysSinceUpdate}`);
-    
-    const status = daysSinceUpdate === 0 ? ['✅', 'Current'] :
-                  daysSinceUpdate === 1 ? ['🟡', 'Recent'] :
-                  daysSinceUpdate <= 3 ? ['⚠️', 'Stale'] : ['🔴', 'Outdated'];
-    console.log(`Status: ${status[0]} ${status[1]}`);
+    console.log(`Status: ${daysSinceUpdate === 0 ? '🟢 Live' : daysSinceUpdate <= 1 ? '🟡 Recent' : '🔴 Stale'}\n`);
 
     // Market Data
-    console.log('\nMarket Data:');
+    const latestPrice = data.marketData[0].close;
+    const previousPrice = data.marketData[1].close;
+    const dailyChange = ((latestPrice - previousPrice) / previousPrice * 100).toFixed(2);
+    
+    console.log('Market Data:');
     console.log('───────────────────────────────────────');
     console.log(`Symbol: ${data.symbol}`);
-    console.log(`Price: $${data.marketData[0].close.toFixed(2)}`);
-    console.log(`Daily Change: ${((data.marketData[0].close - data.marketData[0].open) / data.marketData[0].open * 100).toFixed(2)}%`);
+    console.log(`Price: $${latestPrice.toFixed(2)}`);
+    console.log(`Daily Change: ${dailyChange}%\n`);
 
-    // Technical Analysis
-    if (data.analysis.technical) {
-        const tech = data.analysis.technical;
-        
-        // Bollinger Bands
-        if (tech.bollingerBands) {
-            console.log('\nBollinger Bands:');
-            console.log('───────────────────────────────────────');
-            const bb = tech.bollingerBands;
-            console.log(`Upper: $${bb.upper.toFixed(2)}`);
-            console.log(`Middle: $${bb.middle.toFixed(2)}`);
-            console.log(`Lower: $${bb.lower.toFixed(2)}`);
-            const width = ((bb.upper - bb.lower) / bb.middle * 100).toFixed(2);
-            console.log(`Band Width: ${width}%`);
-        }
+    // Technical Indicators
+    const tech = data.analysis.technical;
+    
+    console.log('Technical Indicators:');
+    console.log('───────────────────────────────────────');
+    console.log(`RSI (14): ${tech.rsi.toFixed(2)}`);
+    console.log(`Trend: ${tech.rsi > 70 ? '🔴 Overbought' : 
+                        tech.rsi < 30 ? '🟢 Oversold' : 
+                        '⚪ Neutral'}\n`);
 
-        // MACD
-        if (tech.macd) {
-            console.log('\nMACD Analysis:');
-            console.log('───────────────────────────────────────');
-            console.log(`Trend: ${tech.macd.trend}`);
-            console.log(`Histogram: ${tech.macd.histogram.toFixed(2)}`);
-        }
+    // Bollinger Bands
+    console.log('Bollinger Bands:');
+    console.log('───────────────────────────────────────');
+    console.log(`Upper: $${tech.bollingerBands.upper.toFixed(2)}`);
+    console.log(`Middle: $${tech.bollingerBands.middle.toFixed(2)}`);
+    console.log(`Lower: $${tech.bollingerBands.lower.toFixed(2)}`);
+    const bandWidth = ((tech.bollingerBands.upper - tech.bollingerBands.lower) / 
+                      tech.bollingerBands.middle * 100).toFixed(2);
+    console.log(`Band Width: ${bandWidth}%`);
 
-        // Volume Analysis
-        if (tech.volume) {
-            console.log('\nVolume Analysis:');
-            console.log('───────────────────────────────────────');
-            console.log(`vs Average: ${tech.volume.current_vs_average.toFixed(2)}%`);
-            console.log(`Trend: ${tech.volume.trend}`);
-        }
+    console.log(`Volatility: ${tech.bollingerBands.volatility.state}`);
+    console.log(`Current: ${tech.bollingerBands.volatility.current.toFixed(2)}%`);
+    console.log(`Average: ${tech.bollingerBands.volatility.average.toFixed(2)}%`);
+    console.log(`Range: ${tech.bollingerBands.volatility.min.toFixed(2)}% - ${tech.bollingerBands.volatility.max.toFixed(2)}%`);
 
-        // Breakout Analysis
-        if (tech.breakout) {
-            console.log('\nBreakout Analysis:');
-            console.log('───────────────────────────────────────');
-            const breakout = tech.breakout;
-            
-            const directionEmoji = {
-                'LONG': '🚀',
-                'SHORT': '📉',
-                'NEUTRAL': '️'
-            }[breakout.direction] || '➡️';
-            
-            console.log(`Direction: ${breakout.direction} ${directionEmoji}`);
-            console.log(`Probability: ${breakout.probability}% ${
-                breakout.probability >= 70 ? '🟢' :
-                breakout.probability >= 40 ? '🟡' : '🔴'
-            }`);
-            console.log(`Timeframe: ${breakout.timeframe} ${
-                breakout.timeframe === 'SHORT' ? '⚡' :
-                breakout.timeframe === 'MEDIUM' ? '📅' : '📈'
-            }`);
+    console.log(`Squeeze:`);
+    console.log(`Status: ${tech.bollingerBands.squeeze.active ? '🔴 Active' : '🟢 Inactive'}`);
+    console.log(`Intensity: ${tech.bollingerBands.squeeze.intensity}`);
+    console.log(`Bandwidth %: ${tech.bollingerBands.squeeze.bandwidthPercentile.toFixed(2)}%`);
+
+    // MACD Analysis
+    console.log('MACD Analysis:');
+    console.log('───────────────────────────────────────');
+    console.log(`Trend: ${tech.macd.trend}`);
+    console.log(`Histogram: ${tech.macd.histogram.toFixed(2)}\n`);
+
+    // Moving Averages
+    console.log('Moving Averages:');
+    console.log('───────────────────────────────────────');
+    console.log(`EMA (20): $${tech.movingAverages.ema20.toFixed(2)}`);
+    console.log(`SMA (50): $${tech.movingAverages.sma50.toFixed(2)}`);
+    console.log(`SMA (200): $${tech.movingAverages.sma200.toFixed(2)}`);
+
+    console.log(`Price Position: ${tech.movingAverages.pricePosition.status}`);
+    console.log(`Overall Trend: ${tech.movingAverages.trend}`);
+
+    if (tech.movingAverages.crosses.hasRecentCross) {
+        console.log(`Recent Crosses:`);
+        console.log(`${tech.movingAverages.crosses.ema20_sma50.bullish ? '• Bullish EMA20/SMA50 Cross\n' : ''}${tech.movingAverages.crosses.ema20_sma50.bearish ? '• Bearish EMA20/SMA50 Cross\n' : ''}${tech.movingAverages.crosses.ema20_sma200.bullish ? '• Bullish EMA20/SMA200 Cross\n' : ''}${tech.movingAverages.crosses.ema20_sma200.bearish ? '• Bearish EMA20/SMA200 Cross\n' : ''}${tech.movingAverages.crosses.sma50_sma200.bullish ? '• Bullish SMA50/SMA200 Cross\n' : ''}${tech.movingAverages.crosses.sma50_sma200.bearish ? '• Bearish SMA50/SMA200 Cross\n' : ''}`);
+    }
+
+    // Volume Analysis
+    console.log('Volume Analysis:');
+    console.log('───────────────────────────────────────');
+    console.log(`Current Volume: ${data.marketData[0].volume.toLocaleString()}`);
+    console.log(`10-Day Average: ${tech.volume.averages.tenDay.toLocaleString()}`);
+    console.log(`20-Day Average: ${tech.volume.averages.twentyDay.toLocaleString()}`);
+    console.log(`\nRelative Volume:`);
+    console.log(`vs 10-Day: ${tech.volume.ratios.tenDay.toFixed(2)}%`);
+    console.log(`vs 20-Day: ${tech.volume.ratios.twentyDay.toFixed(2)}%`);
+    console.log(`\nOn-Balance Volume (OBV):`);
+    console.log(`Trend: ${tech.volume.obv.trend}`);
+    console.log(`Momentum: ${tech.volume.obv.momentum.toFixed(2)}%`);
+    console.log(`\nVolume Signals:`);
+    console.log(`Trend: ${tech.volume.trend}`);
+    console.log(`Intensity: ${tech.volume.signals.intensity}`);
+    console.log(`Accumulation: ${tech.volume.signals.accumulation ? '✓' : '✗'}`);
+    console.log(`Distribution: ${tech.volume.signals.distribution ? '✓' : '✗'}\n`);
+
+    // Breakout Analysis
+    console.log('Breakout Analysis:');
+    console.log('───────────────────────────────────────');
+    console.log(`Direction: ${tech.breakout.direction} ${tech.breakout.direction === 'LONG' ? '📈' : '📉'}`);
+    console.log(`Probability: ${tech.breakout.probability}% ${
+        tech.breakout.probability >= 80 ? '🟢' :
+        tech.breakout.probability >= 60 ? '🟡' : '🔴'
+    }`);
+    console.log(`Timeframe: ${tech.breakout.timeframe} 📅\n`);
+
+    // AI Analysis
+    console.log('AI Analysis:');
+    console.log('───────────────────────────────────────');
+    if (data.signals) {
+        console.log(`Primary Signal: ${data.signals.primary} ${
+            data.signals.primary === 'BULLISH' ? '🟢' :
+            data.signals.primary === 'BEARISH' ? '🔴' : '⚪'
+        }`);
+        console.log(`Confidence: ${data.signals.confidence}%\n`);
+
+        // Secondary Signals
+        if (data.signals.secondary && data.signals.secondary.length > 0) {
+            console.log('Key Factors:');
+            data.signals.secondary.forEach(signal => console.log(`- ${signal}`));
+            console.log();
         }
     }
 
-    // AI Analysis
-    if (data.analysis.ai) {
-        console.log('\nAI Analysis:');
+    // Detailed AI Analysis
+    if (data.analysis.summary) {
+        console.log('Detailed Analysis:');
         console.log('───────────────────────────────────────');
-        console.log(`Primary Signal: ${data.analysis.ai.signals.primary} ${
-            data.analysis.ai.signals.primary === 'BULLISH' ? '🟢' :
-            data.analysis.ai.signals.primary === 'BEARISH' ? '🔴' : '🟡'
-        }`);
-        console.log(`Confidence: ${data.analysis.ai.signals.confidence}%`);
-        if (data.analysis.ai.analysis?.breakoutContext) {
-            console.log('\nContext:', data.analysis.ai.analysis.breakoutContext);
-        }
+        console.log(data.analysis.summary);
+        console.log();
+    }
+
+    // Breakout Context
+    if (data.analysis.breakoutContext) {
+        console.log('Breakout Context:');
+        console.log('───────────────────────────────────────');
+        console.log(`Direction: ${data.analysis.breakoutContext.direction}`);
+        console.log(`Strength: ${data.analysis.breakoutContext.strength}`);
+        console.log(`Support: $${data.analysis.breakoutContext.support.toFixed(2)}`);
+        console.log(`Resistance: $${data.analysis.breakoutContext.resistance.toFixed(2)}\n`);
     }
 }
 

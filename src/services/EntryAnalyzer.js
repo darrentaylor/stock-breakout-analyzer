@@ -1,4 +1,5 @@
 import { logger } from '../utils/logger.js';
+import { StopLossService } from './StopLossService.js';
 
 export class EntryAnalyzer {
   constructor() {
@@ -7,6 +8,7 @@ export class EntryAnalyzer {
     this.PRICE_THRESHOLD = 0.02;              // 2% from support
     this.MIN_RR_CONSERVATIVE = 1.5;           // 1.5:1 risk/reward
     this.MIN_RR_AGGRESSIVE = 2;               // 2:1 risk/reward
+    this.stopLossService = new StopLossService();
   }
 
   analyzeEntryPoints(marketData, technicalData) {
@@ -16,12 +18,49 @@ export class EntryAnalyzer {
       const resistance = this.findDynamicResistance(marketData);
       const volumeMetrics = this.calculateVolumeMetrics(marketData);
       
-      return {
+      const entryAnalysis = {
         conservative: this.analyzeConservativeEntry(latest, support, resistance, volumeMetrics, technicalData),
         aggressive: this.analyzeAggressiveEntry(latest, support, resistance, volumeMetrics, technicalData),
-        support_levels: this.findSupportLevels(marketData),
-        resistance_levels: this.findResistanceLevels(marketData)
+        support_levels: {
+          technical: this.findSupportLevels(marketData),
+          fibonacci: technicalData.fibonacci.support
+        },
+        resistance_levels: {
+          technical: this.findResistanceLevels(marketData),
+          fibonacci: technicalData.fibonacci.resistance
+        },
+        risk_metrics: {
+          atr: technicalData.atr.value,
+          risk_level: technicalData.atr.risk_level,
+          stop_loss: this.calculateStopLoss(latest.close, technicalData.atr.value),
+          position_size: this.calculatePositionSize(technicalData.atr.value, latest.close)
+        },
+        institutional_flow: {
+          mfi_signal: technicalData.mfi.signal,
+          activity: technicalData.mfi.institutional_activity
+        }
       };
+
+      entryAnalysis.fibonacci_entries = this.analyzeFibonacciEntries(
+        latest.close,
+        technicalData.fibonacci,
+        technicalData.atr.value
+      );
+
+      const stopLossLevels = this.stopLossService.calculateStopLoss({
+        currentPrice: latest.close,
+        atr: technicalData.atr.value,
+        technicalLevels: {
+          support: support,
+          resistance: resistance
+        },
+        patterns: technicalData.patterns,
+        volatility: technicalData.volatility
+      });
+
+      entryAnalysis.riskRewardRatio = this.calculateRiskRewardRatio(latest.close, stopLossLevels.optimal.initial, technicalData.targets.primary);
+
+      return entryAnalysis;
     } catch (error) {
       logger.error('Entry point analysis failed:', error);
       return null;
@@ -166,5 +205,75 @@ export class EntryAnalyzer {
 
     entry.valid = Object.values(entry.conditions).every(condition => condition);
     return entry;
+  }
+
+  calculateStopLoss(currentPrice, atr) {
+    const multiplier = 2; // Conservative stop loss at 2x ATR
+    return {
+      conservative: currentPrice - (atr * multiplier),
+      aggressive: currentPrice - atr
+    };
+  }
+
+  calculatePositionSize(atr, currentPrice) {
+    const riskPercentage = 0.02; // 2% account risk
+    const accountSize = 100000; // Example account size
+    const riskAmount = accountSize * riskPercentage;
+    const positionSize = Math.floor(riskAmount / atr);
+    
+    return {
+      units: positionSize,
+      value: positionSize * currentPrice,
+      risk_per_share: atr
+    };
+  }
+
+  analyzeFibonacciEntries(currentPrice, fibLevels, atr) {
+    const entries = [];
+    
+    Object.entries(fibLevels.levels).forEach(([level, price]) => {
+      if (Math.abs(currentPrice - price) <= atr) {
+        entries.push({
+          level,
+          price,
+          type: price < currentPrice ? 'SUPPORT' : 'RESISTANCE',
+          strength: this.calculateFibLevelStrength(level),
+          stop_loss: this.calculateStopLoss(price, atr)
+        });
+      }
+    });
+
+    return {
+      potential_entries: entries,
+      nearest_level: fibLevels.nearest,
+      risk_reward: this.calculateRiskReward(entries, currentPrice, atr)
+    };
+  }
+
+  calculateFibLevelStrength(level) {
+    const strengthMap = {
+      '0.618': 'STRONG',
+      '0.500': 'STRONG',
+      '0.382': 'MEDIUM',
+      '0.236': 'WEAK',
+      '0.786': 'MEDIUM'
+    };
+    
+    return strengthMap[level] || 'MEDIUM';
+  }
+
+  calculateRiskReward(entries, currentPrice, atr) {
+    return entries.map(entry => ({
+      level: entry.level,
+      risk: atr * 2, // 2x ATR for stop loss
+      reward: Math.abs(currentPrice - entry.price),
+      ratio: (Math.abs(currentPrice - entry.price) / (atr * 2)).toFixed(2)
+    }));
+  }
+
+  calculateRiskRewardRatio(currentPrice, stopLevel, target) {
+    const risk = Math.abs(currentPrice - stopLevel);
+    const reward = Math.abs(target - currentPrice);
+    return reward / risk;
   }
 }

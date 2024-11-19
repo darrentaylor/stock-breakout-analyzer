@@ -15,10 +15,8 @@ export class MarketDataAPI {
       throw new Error('Invalid API response format');
     }
 
-    // Get a sample of the data structure
-    const sampleDate = Object.keys(timeSeriesData)[0];
-    console.log('\nDEBUG: Sample Data Point Structure:', timeSeriesData[sampleDate]);
-
+    const currentDate = new Date();
+    
     // Convert to array and sort by date (newest first)
     const processedData = Object.entries(timeSeriesData)
       .map(([date, data]) => ({
@@ -28,9 +26,21 @@ export class MarketDataAPI {
         low: parseFloat(data['3. low']),
         close: parseFloat(data['4. close']),
         volume: parseInt(data['5. volume']),
-        adjClose: parseFloat(data['4. close']) // Required by TechnicalAnalysis
+        adjClose: parseFloat(data['4. close'])
       }))
+      // Filter out future dates and invalid data
+      .filter(data => {
+        const dataDate = new Date(data.date);
+        return dataDate <= currentDate && 
+               !isNaN(data.open) && 
+               !isNaN(data.close) && 
+               data.volume > 0;
+      })
       .sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    if (processedData.length === 0) {
+      throw new Error('No valid market data available after filtering');
+    }
 
     console.log('\nDEBUG: Processed Data First Entry:', processedData[0]);
     console.log('DEBUG: Processed Data Length:', processedData.length);

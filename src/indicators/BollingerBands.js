@@ -9,15 +9,16 @@ export class BollingerBands {
       const prices = this.data.map(d => d.close);
       const bands = [];
       const lookbackPeriod = 20;
-  
-      for (let i = this.period - 1; i < prices.length; i++) {
-        const slice = prices.slice(i - this.period + 1, i + 1);
+
+      // Calculate bands for each period
+      for (let i = this.period - 1; i >= 0; i--) {
+        const slice = prices.slice(i, i + this.period);
         const sma = this.calculateSMA(slice);
         const stdDev = this.calculateStandardDeviation(slice, sma);
         const bandwidth = ((this.multiplier * stdDev * 2) / sma) * 100;
-  
+
         // Calculate squeeze metrics
-        const recentBandwidths = bands.slice(-lookbackPeriod).map(b => b.bandwidth);
+        const recentBandwidths = bands.map(b => b.bandwidth);
         const averageBandwidth = recentBandwidths.length > 0 ? 
           this.calculateSMA(recentBandwidths) : bandwidth;
         
@@ -27,8 +28,8 @@ export class BollingerBands {
           averageBandwidth,
           currentBandwidth: bandwidth
         };
-  
-        bands.push({
+
+        bands.unshift({
           date: this.data[i].date,
           middle: sma,
           upper: sma + (this.multiplier * stdDev),

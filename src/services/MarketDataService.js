@@ -1,59 +1,105 @@
-async fetchMarketData(symbol) {
+import axios from 'axios';
+import { DataManager } from './DataManager.js';
+import { logger } from '../utils/logger.js';
+
+export class MarketDataService {
+  constructor(alphaVantageService) {
+    this.alphaVantageService = alphaVantageService;
+    this.dataManager = new DataManager();
+    this.CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
+  }
+
+  async getHistoricalData(symbol, interval = 'daily', outputsize = 'compact') {
     try {
-      // Use Alpha Vantage real-time endpoint
-      const response = await axios.get(
-        `${this.baseUrl}/query?function=TIME_SERIES_INTRADAY&symbol=${symbol}&interval=5min&apikey=${this.apiKey}`
-      );
-  
-      // Verify data is current
-      const latestTimestamp = Object.keys(response.data['Time Series (5min)'])[0];
-      const currentTime = new Date();
-      const dataTime = new Date(latestTimestamp);
-      
-      if (currentTime - dataTime > 24 * 60 * 60 * 1000) {
-        console.warn('Warning: Data may not be current');
+      // Check cache first
+      const cacheKey = `${symbol}_${interval}`;
+      const cachedData = await this.dataManager.getCachedData(cacheKey, 'historical');
+      if (cachedData && this.isDataFresh(cachedData.timestamp)) {
+        logger.debug(`Using cached historical data for ${symbol}`);
+        return cachedData.data;
       }
-  
-      return this.formatMarketData(response.data);
+
+      // Fetch new data
+      logger.debug(`Fetching historical data for ${symbol}...`);
+      const data = await this.alphaVantageService.getHistoricalData(symbol, interval, outputsize);
+      
+      if (!data || data.length === 0) {
+        throw new Error(`No historical data available for ${symbol}`);
+      }
+
+      // Format the data
+      const formattedData = this.formatHistoricalData(data);
+
+      // Cache the data
+      await this.dataManager.cacheData(cacheKey, {
+        data: formattedData,
+        timestamp: Date.now()
+      }, 'historical');
+
+      return formattedData;
     } catch (error) {
-      console.error('Error fetching market data:', error);
+      logger.error(`Error fetching historical data for ${symbol}:`, error);
       throw error;
     }
   }
 
-  async validateData(data) {
-    const now = new Date();
-    const marketData = data['Time Series (Daily)'];
-    const latestDate = Object.keys(marketData)[0];
-    const dataAge = now - new Date(latestDate);
-    
-    // Check if data is stale (more than 24 hours old on trading days)
-    if (dataAge > 24 * 60 * 60 * 1000 && this.isTradingDay(now)) {
-      console.warn(`⚠️ Warning: Data may be stale. Latest data from: ${latestDate}`);
-    }
+  async fetchMarketData(symbol) {
+    try {
+      // Check cache first
+      const cachedData = await this.dataManager.getCachedData(symbol, 'intraday');
+      if (cachedData && this.isDataFresh(cachedData.timestamp)) {
+        logger.debug(`Using cached intraday data for ${symbol}`);
+        return cachedData.data;
+      }
 
-    // Verify price ranges
-    const latestPrice = parseFloat(marketData[latestDate]['4. close']);
-    if (this.isUnrealisticPrice(latestPrice)) {
-      console.error(`🚨 Error: Unrealistic price detected: ${latestPrice}`);
-      throw new Error('Invalid price data');
-    }
+      // Fetch new data
+      logger.debug(`Fetching intraday data for ${symbol}...`);
+      const data = await this.alphaVantageService.getIntradayData(symbol);
 
-    return {
-      isValid: true,
-      timestamp: latestDate,
-      age: dataAge,
-      price: latestPrice
-    };
+      if (!data || data.length === 0) {
+        throw new Error(`No intraday data available for ${symbol}`);
+      }
+
+      // Format the data
+      const formattedData = this.formatMarketData(data);
+
+      // Cache the data
+      await this.dataManager.cacheData(symbol, {
+        data: formattedData,
+        timestamp: Date.now()
+      }, 'intraday');
+
+      return formattedData;
+    } catch (error) {
+      logger.error(`Error fetching market data for ${symbol}:`, error);
+      throw error;
+    }
   }
 
-  isTradingDay(date) {
-    const day = date.getDay();
-    return day !== 0 && day !== 6; // Not weekend
+  isDataFresh(timestamp) {
+    return Date.now() - timestamp < this.CACHE_DURATION;
   }
 
-  isUnrealisticPrice(price) {
-    // Add reasonable price range checks
-    return price <= 0 || price > 1000000;
+  formatHistoricalData(data) {
+    return data.map(item => ({
+      timestamp: new Date(item.timestamp).getTime(),
+      open: parseFloat(item.open),
+      high: parseFloat(item.high),
+      low: parseFloat(item.low),
+      close: parseFloat(item.close),
+      volume: parseInt(item.volume),
+      adjusted_close: parseFloat(item.adjusted_close || item.close)
+    })).sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  formatMarketData(data) {
+    return data.map(item => ({
+      timestamp: new Date(item.timestamp).getTime(),
+      open: parseFloat(item.open),
+      high: parseFloat(item.high),
+      low: parseFloat(item.low),
+      close: parseFloat(item.close),
+      volume: parseInt(item.volume)
+    })).sort((a, b) => a.timestamp - b.timestamp);
   }
 }

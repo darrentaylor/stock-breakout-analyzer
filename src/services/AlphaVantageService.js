@@ -1,52 +1,71 @@
+import axios from 'axios';
+import { logger } from '../utils/logger.js';
+
 export class AlphaVantageService {
-    constructor(apiKey) {
-        this.apiKey = apiKey;
-        this.baseUrl = 'https://www.alphavantage.co/query';
-        this.rateLimit = 5;
-        this.lastCall = 0;
-        this.fetch = null;
-    }
+  constructor(apiKey) {
+    this.apiKey = apiKey;
+    this.baseUrl = 'https://www.alphavantage.co/query';
+  }
 
-    async init() {
-        const { default: fetch } = await import('node-fetch');
-        this.fetch = fetch;
-    }
+  async getHistoricalData(symbol, interval = 'daily', outputsize = 'compact') {
+    try {
+      const endpoint = interval === 'daily' ? 'TIME_SERIES_DAILY_ADJUSTED' : 'TIME_SERIES_INTRADAY';
+      const response = await axios.get(
+        `${this.baseUrl}?function=${endpoint}&symbol=${symbol}&outputsize=${outputsize}&apikey=${this.apiKey}`
+      );
 
-    async fetchIntraday(symbol, interval = '5min') {
-        await this._checkRateLimit();
-        const url = `${this.baseUrl}?function=TIME_SERIES_INTRADAY&symbol=${symbol}&interval=${interval}&apikey=${this.apiKey}`;
-        return this._makeRequest(url);
-    }
+      if (response.data?.['Error Message']) {
+        throw new Error(`Alpha Vantage API error: ${response.data['Error Message']}`);
+      }
 
-    async fetchDaily(symbol) {
-        await this._checkRateLimit();
-        const url = `${this.baseUrl}?function=TIME_SERIES_DAILY&symbol=${symbol}&apikey=${this.apiKey}`;
-        return this._makeRequest(url);
-    }
+      const timeSeriesKey = interval === 'daily' ? 'Time Series (Daily)' : `Time Series (${interval})`;
+      const timeSeriesData = response.data[timeSeriesKey];
 
-    async _makeRequest(url) {
-        if (!this.fetch) await this.init();
-        try {
-            const response = await this.fetch(url);
-            if (!response.ok) {
-                throw new Error(`Alpha Vantage API error: ${response.statusText}`);
-            }
-            const data = await response.json();
-            this.lastCall = Date.now();
-            return data;
-        } catch (error) {
-            console.error('Alpha Vantage request failed:', error);
-            throw error;
-        }
-    }
+      if (!timeSeriesData) {
+        throw new Error('Invalid API response format');
+      }
 
-    async _checkRateLimit() {
-        const now = Date.now();
-        const timeSinceLastCall = now - this.lastCall;
-        const minDelay = (60 / this.rateLimit) * 1000;
-        
-        if (timeSinceLastCall < minDelay) {
-            await new Promise(resolve => setTimeout(resolve, minDelay - timeSinceLastCall));
-        }
+      return Object.entries(timeSeriesData).map(([timestamp, data]) => ({
+        timestamp,
+        open: data['1. open'],
+        high: data['2. high'],
+        low: data['3. low'],
+        close: data['4. close'],
+        volume: data['5. volume'],
+        adjusted_close: data['5. adjusted close'] || data['4. close']
+      }));
+    } catch (error) {
+      logger.error(`Error fetching historical data for ${symbol}:`, error);
+      throw error;
     }
+  }
+
+  async getIntradayData(symbol) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}?function=TIME_SERIES_INTRADAY&symbol=${symbol}&interval=5min&apikey=${this.apiKey}`
+      );
+
+      if (response.data?.['Error Message']) {
+        throw new Error(`Alpha Vantage API error: ${response.data['Error Message']}`);
+      }
+
+      const timeSeriesData = response.data['Time Series (5min)'];
+      if (!timeSeriesData) {
+        throw new Error('Invalid API response format');
+      }
+
+      return Object.entries(timeSeriesData).map(([timestamp, data]) => ({
+        timestamp,
+        open: data['1. open'],
+        high: data['2. high'],
+        low: data['3. low'],
+        close: data['4. close'],
+        volume: data['5. volume']
+      }));
+    } catch (error) {
+      logger.error(`Error fetching intraday data for ${symbol}:`, error);
+      throw error;
+    }
+  }
 }
