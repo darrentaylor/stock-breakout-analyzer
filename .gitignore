@@ -1,0 +1,15 @@
+# Logs
+*.log
+combined.log
+debug.log
+error.log
+exceptions.log
+rejections.log
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Dependencies
+node_modules/

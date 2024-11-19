@@ -1,0 +1,23 @@
+{
+  "name": "stock-breakout-analyzer",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "vitest",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.32.1",
+    "axios": "^1.7.7",
+    "date-fns": "^2.30.0",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.72.0",
+    "technicalindicators": "^3.1.0",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "vitest": "^0.34.6"
+  }
+}
