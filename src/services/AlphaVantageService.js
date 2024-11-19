@@ -7,6 +7,27 @@ export class AlphaVantageService {
     this.baseUrl = 'https://www.alphavantage.co/query';
   }
 
+  async getQuote(symbol) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${this.apiKey}`
+      );
+
+      if (response.data?.['Error Message']) {
+        throw new Error(`Alpha Vantage API error: ${response.data['Error Message']}`);
+      }
+
+      if (!response.data?.['Global Quote']) {
+        throw new Error('Invalid API response format');
+      }
+
+      return response.data;
+    } catch (error) {
+      logger.error(`Error fetching quote data for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
   async getHistoricalData(symbol, interval = 'daily', outputsize = 'compact') {
     try {
       const endpoint = interval === 'daily' ? 'TIME_SERIES_DAILY_ADJUSTED' : 'TIME_SERIES_INTRADAY';
@@ -25,14 +46,21 @@ export class AlphaVantageService {
         throw new Error('Invalid API response format');
       }
 
+      // Log the first data point for debugging
+      const firstEntry = Object.entries(timeSeriesData)[0];
+      logger.debug('Sample Alpha Vantage data point:', {
+        date: firstEntry[0],
+        data: firstEntry[1]
+      });
+
       return Object.entries(timeSeriesData).map(([timestamp, data]) => ({
         timestamp,
-        open: data['1. open'],
-        high: data['2. high'],
-        low: data['3. low'],
-        close: data['4. close'],
-        volume: data['5. volume'],
-        adjusted_close: data['5. adjusted close'] || data['4. close']
+        open: parseFloat(data['1. open']),
+        high: parseFloat(data['2. high']),
+        low: parseFloat(data['3. low']),
+        close: parseFloat(data['4. close']),
+        volume: parseFloat(data['6. volume']), 
+        adjusted_close: parseFloat(data['5. adjusted close'])
       }));
     } catch (error) {
       logger.error(`Error fetching historical data for ${symbol}:`, error);

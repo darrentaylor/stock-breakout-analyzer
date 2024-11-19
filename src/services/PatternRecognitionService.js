@@ -5,12 +5,26 @@ class PatternRecognitionService {
         this.priceDeviation = 0.02; // 2% deviation allowed for pattern recognition
     }
 
+    async analyze(data) {
+        return this.analyzePatterns(data);
+    }
+
     /**
      * Analyzes price data for various chart patterns
      * @param {Array} data - Array of price data objects with OHLC values
      * @returns {Object} Pattern analysis results
      */
     analyzePatterns(data) {
+        if (!data || data.length < this.minPatternBars) {
+            return {
+                patterns: {},
+                summary: {
+                    detected: false,
+                    message: 'Insufficient data for pattern analysis'
+                }
+            };
+        }
+
         const patterns = {
             bullFlag: this.detectBullFlag(data),
             bearFlag: this.detectBearFlag(data),
@@ -19,9 +33,104 @@ class PatternRecognitionService {
             headAndShoulders: this.detectHeadAndShoulders(data)
         };
 
+        // Add confidence scores and stop loss levels
+        Object.entries(patterns).forEach(([type, pattern]) => {
+            if (pattern.detected) {
+                pattern.type = type;
+                pattern.confidence = this.calculatePatternConfidence(pattern, data);
+                pattern.stopLoss = this.calculatePatternStopLoss(pattern, data);
+            }
+        });
+
         return {
-            patterns,
+            patterns: Object.entries(patterns)
+                .filter(([_, pattern]) => pattern.detected)
+                .map(([type, pattern]) => ({
+                    type,
+                    confidence: pattern.confidence,
+                    stopLoss: pattern.stopLoss,
+                    details: pattern
+                })),
             summary: this.generatePatternSummary(patterns)
+        };
+    }
+
+    calculatePatternConfidence(pattern, data) {
+        // Base confidence from pattern detection
+        let confidence = pattern.strength || 0.5;
+
+        // Adjust based on volume confirmation
+        if (pattern.volumeConfirmation) {
+            confidence += 0.1;
+        }
+
+        // Adjust based on trend strength
+        if (pattern.trendStrength > 0.7) {
+            confidence += 0.2;
+        }
+
+        // Adjust based on pattern clarity
+        if (pattern.priceDeviation < this.priceDeviation) {
+            confidence += 0.1;
+        }
+
+        // Cap confidence at 1.0
+        return Math.min(confidence, 1.0);
+    }
+
+    calculatePatternStopLoss(pattern, data) {
+        const currentPrice = data[0].close;
+        let stopLossLevel;
+
+        switch (pattern.type) {
+            case 'bullFlag':
+            case 'pennant':
+                // Use the lowest low of the consolidation period
+                stopLossLevel = Math.min(...data.slice(0, pattern.consolidation?.length || 5).map(d => d.low));
+                break;
+
+            case 'bearFlag':
+                // Use the highest high of the consolidation period
+                stopLossLevel = Math.max(...data.slice(0, pattern.consolidation?.length || 5).map(d => d.high));
+                break;
+
+            case 'triangle':
+                // Use the last support level
+                stopLossLevel = pattern.support || (currentPrice * 0.95);
+                break;
+
+            case 'headAndShoulders':
+                // Use the neckline
+                stopLossLevel = pattern.neckline || (currentPrice * 0.95);
+                break;
+
+            default:
+                // Default to 5% below current price
+                stopLossLevel = currentPrice * 0.95;
+        }
+
+        return Math.abs(currentPrice - stopLossLevel) / currentPrice;
+    }
+
+    generatePatternSummary(patterns) {
+        const detectedPatterns = Object.entries(patterns).filter(([_, p]) => p.detected);
+        
+        if (detectedPatterns.length === 0) {
+            return {
+                detected: false,
+                message: 'No significant patterns detected'
+            };
+        }
+
+        const strongestPattern = detectedPatterns.reduce((prev, curr) => {
+            return (curr[1].confidence > prev[1].confidence) ? curr : prev;
+        });
+
+        return {
+            detected: true,
+            primaryPattern: strongestPattern[0],
+            confidence: strongestPattern[1].confidence,
+            message: `Detected ${detectedPatterns.length} pattern(s). Primary pattern: ${strongestPattern[0]} with ${(strongestPattern[1].confidence * 100).toFixed(1)}% confidence`
         };
     }
 
@@ -49,11 +158,9 @@ class PatternRecognitionService {
 
         return {
             detected: true,
-            confidence: this.calculatePatternConfidence({
-                uptrendStrength: uptrend.strength,
-                consolidationQuality: consolidation.quality,
-                volumePattern: volumeDecline ? 1 : 0.5
-            }),
+            strength: uptrend.strength,
+            consolidation: consolidation,
+            volumeConfirmation: volumeDecline,
             startIndex: 0,
             endIndex: uptrend.length + consolidation.length,
             type: 'BULL_FLAG'
@@ -81,11 +188,9 @@ class PatternRecognitionService {
 
         return {
             detected: true,
-            confidence: this.calculatePatternConfidence({
-                trendStrength: downtrend.strength,
-                consolidationQuality: consolidation.quality,
-                volumePattern: volumeDecline ? 1 : 0.5
-            }),
+            strength: downtrend.strength,
+            consolidation: consolidation,
+            volumeConfirmation: volumeDecline,
             startIndex: 0,
             endIndex: downtrend.length + consolidation.length,
             type: 'BEAR_FLAG'
@@ -113,11 +218,9 @@ class PatternRecognitionService {
 
         return {
             detected: true,
-            confidence: this.calculatePatternConfidence({
-                trendStrength: trend.strength,
-                convergenceQuality: convergence.quality,
-                volumePattern: this.checkVolumeDeclining(priceData.slice(trend.length)) ? 1 : 0.5
-            }),
+            strength: trend.strength,
+            convergence: convergence,
+            volumeConfirmation: this.checkVolumeDeclining(priceData.slice(trend.length)),
             startIndex: 0,
             endIndex: trend.length + convergence.length,
             type: trend.direction === 'up' ? 'BULL_PENNANT' : 'BEAR_PENNANT'
@@ -144,15 +247,12 @@ class PatternRecognitionService {
 
         return {
             detected: true,
-            confidence: this.calculatePatternConfidence({
-                trendlineQuality: (upperTrendline.r2 + lowerTrendline.r2) / 2,
-                convergenceQuality: convergencePoint.quality,
-                priceAction: this.assessPriceAction(priceData)
-            }),
-            type,
+            strength: (upperTrendline.r2 + lowerTrendline.r2) / 2,
+            convergence: convergencePoint,
+            support: convergencePoint.y,
             startIndex: 0,
             endIndex: lookback - 1,
-            convergencePoint
+            type
         };
     }
 
@@ -178,15 +278,12 @@ class PatternRecognitionService {
 
         return {
             detected: true,
-            confidence: this.calculatePatternConfidence({
-                shoulderSymmetry: formation.symmetry,
-                necklineQuality: formation.necklineQuality,
-                volumePattern: formation.volumePattern
-            }),
-            type: 'HEAD_AND_SHOULDERS',
+            strength: formation.symmetry,
+            neckline: formation.neckline,
+            volumeConfirmation: formation.volumePattern,
             startIndex: formation.startIndex,
             endIndex: formation.endIndex,
-            neckline: formation.neckline
+            type: 'HEAD_AND_SHOULDERS'
         };
     }
 
@@ -301,96 +398,6 @@ class PatternRecognitionService {
         const volumes = data.map(d => d.volume);
         const slope = this.calculateTrendlineSlope(volumes);
         return slope < 0;
-    }
-
-    calculatePatternConfidence(factors) {
-        const weights = {
-            trendStrength: 0.3,
-            consolidationQuality: 0.3,
-            volumePattern: 0.2,
-            convergenceQuality: 0.3,
-            shoulderSymmetry: 0.4,
-            necklineQuality: 0.3,
-            priceAction: 0.2
-        };
-
-        let totalWeight = 0;
-        let weightedSum = 0;
-
-        for (const [factor, value] of Object.entries(factors)) {
-            if (weights[factor]) {
-                weightedSum += value * weights[factor];
-                totalWeight += weights[factor];
-            }
-        }
-
-        return (weightedSum / totalWeight) * 100;
-    }
-
-    generatePatternSummary(patterns) {
-        const activePatterns = Object.entries(patterns)
-            .filter(([_, pattern]) => pattern.detected)
-            .map(([name, pattern]) => ({
-                name,
-                confidence: pattern.confidence,
-                type: pattern.type
-            }))
-            .sort((a, b) => b.confidence - a.confidence);
-
-        return {
-            patternsFound: activePatterns.length > 0,
-            dominantPattern: activePatterns[0] || null,
-            allPatterns: activePatterns
-        };
-    }
-
-    determineTriangleType(upperSlope, lowerSlope) {
-        // Symmetric triangle: slopes are roughly equal but opposite
-        if (Math.abs(upperSlope + lowerSlope) < 0.001) {
-            return 'SYMMETRIC_TRIANGLE';
-        }
-        
-        // Ascending triangle: flat top, rising bottom
-        if (Math.abs(upperSlope) < 0.001 && lowerSlope > 0) {
-            return 'ASCENDING_TRIANGLE';
-        }
-        
-        // Descending triangle: flat bottom, falling top
-        if (Math.abs(lowerSlope) < 0.001 && upperSlope < 0) {
-            return 'DESCENDING_TRIANGLE';
-        }
-        
-        // Expanding triangle (broadening formation)
-        if (upperSlope > 0 && lowerSlope < 0) {
-            return 'EXPANDING_TRIANGLE';
-        }
-        
-        return null;
-    }
-
-    findConvergencePoint(upperTrendline, lowerTrendline) {
-        // Calculate intersection point
-        const x = (lowerTrendline.intercept - upperTrendline.intercept) / 
-                 (upperTrendline.slope - lowerTrendline.slope);
-        
-        // Calculate y value at intersection
-        const y = upperTrendline.slope * x + upperTrendline.intercept;
-        
-        // Validate convergence point
-        const isValid = x > 0 && x < this.maxPatternBars * 2;
-        
-        // Calculate quality based on R-squared values and convergence distance
-        const quality = (upperTrendline.r2 + lowerTrendline.r2) / 2 * 
-                       (1 - Math.min(x / (this.maxPatternBars * 2), 1));
-        
-        return {
-            isValid,
-            quality,
-            x,
-            y,
-            upperR2: upperTrendline.r2,
-            lowerR2: lowerTrendline.r2
-        };
     }
 
     calculateTrendline(prices) {
@@ -525,6 +532,55 @@ class PatternRecognitionService {
         const oldAvg = prices.slice(-shortPeriod).reduce((a, b) => a + b, 0) / shortPeriod;
         
         return Math.max(0, Math.min(1, (recentAvg - oldAvg) / oldAvg + 0.5));
+    }
+
+    determineTriangleType(upperSlope, lowerSlope) {
+        // Symmetric triangle: slopes are roughly equal but opposite
+        if (Math.abs(upperSlope + lowerSlope) < 0.001) {
+            return 'SYMMETRIC_TRIANGLE';
+        }
+        
+        // Ascending triangle: flat top, rising bottom
+        if (Math.abs(upperSlope) < 0.001 && lowerSlope > 0) {
+            return 'ASCENDING_TRIANGLE';
+        }
+        
+        // Descending triangle: flat bottom, falling top
+        if (Math.abs(lowerSlope) < 0.001 && upperSlope < 0) {
+            return 'DESCENDING_TRIANGLE';
+        }
+        
+        // Expanding triangle (broadening formation)
+        if (upperSlope > 0 && lowerSlope < 0) {
+            return 'EXPANDING_TRIANGLE';
+        }
+        
+        return null;
+    }
+
+    findConvergencePoint(upperTrendline, lowerTrendline) {
+        // Calculate intersection point
+        const x = (lowerTrendline.intercept - upperTrendline.intercept) / 
+                 (upperTrendline.slope - lowerTrendline.slope);
+        
+        // Calculate y value at intersection
+        const y = upperTrendline.slope * x + upperTrendline.intercept;
+        
+        // Validate convergence point
+        const isValid = x > 0 && x < this.maxPatternBars * 2;
+        
+        // Calculate quality based on R-squared values and convergence distance
+        const quality = (upperTrendline.r2 + lowerTrendline.r2) / 2 * 
+                       (1 - Math.min(x / (this.maxPatternBars * 2), 1));
+        
+        return {
+            isValid,
+            quality,
+            x,
+            y,
+            upperR2: upperTrendline.r2,
+            lowerR2: lowerTrendline.r2
+        };
     }
 }
 

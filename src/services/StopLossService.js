@@ -36,354 +36,258 @@ export class StopLossService {
         this.TRAILING_STEP_SIZE = 0.005; // 0.5% step size
     }
 
-    /**
-     * Calculate comprehensive stop loss levels
-     * @param {Object} params - Parameters for stop loss calculation
-     * @param {number} params.currentPrice - Current price of the asset
-     * @param {number} params.atr - Average True Range value
-     * @param {Object} params.technicalLevels - Support and resistance levels
-     * @param {Object} params.patterns - Detected chart patterns
-     * @param {Object} params.volatility - Volatility metrics
-     * @returns {Object} Stop loss recommendations
-     */
-    calculateStopLoss(params) {
+    calculateLevels(data, technical) {
         try {
-            const {
-                currentPrice,
-                atr,
-                technicalLevels,
-                patterns,
-                volatility
-            } = params;
+            const { current, historical } = data;
+            
+            if (!historical || historical.length < 20) {
+                throw new Error('Insufficient historical data for stop loss calculation');
+            }
 
-            // 1. Technical Stop Levels
-            const technicalStops = this.calculateTechnicalStops({
-                currentPrice,
-                support: technicalLevels.support,
-                resistance: technicalLevels.resistance,
-                patterns
-            });
+            if (!current) {
+                throw new Error('Current price is required for stop loss calculation');
+            }
 
-            // 2. Volatility-Based Stops (ATR)
-            const volatilityStops = this.calculateVolatilityStops({
-                currentPrice,
-                atr,
-                volatility
-            });
+            // Calculate ATR-based stops
+            const atrStops = this.calculateATRStops(current, technical.atr?.value || 0);
 
-            // 3. Time-Based Stops
-            const timeBasedStops = this.calculateTimeBasedStops({
-                currentPrice,
-                atr,
-                volatility
-            });
+            // Calculate time-based stops
+            const timeBasedStops = this.calculateTimeBasedStops(historical);
 
-            // 4. Pattern-Specific Stops
-            const patternStops = this.calculatePatternStops({
-                currentPrice,
-                patterns,
-                atr
-            });
+            // Calculate technical level stops
+            const technicalStops = this.calculateTechnicalStops(current, technical);
 
-            // 5. Trailing Stops
-            const trailingStops = this.calculateTrailingStops({
-                currentPrice,
-                atr,
-                volatility,
-                patterns
-            });
+            // Calculate volatility-based stops
+            const volatilityStops = this.calculateVolatilityStops(current, historical);
 
-            // Combine all stop types and determine optimal levels
-            return this.consolidateStopLevels({
+            // Calculate pattern-based stops if patterns exist
+            const patternStops = this.calculatePatternStops(current, technical.patterns || []);
+
+            return {
+                atr: atrStops,
+                timeBased: timeBasedStops,
                 technical: technicalStops,
                 volatility: volatilityStops,
-                timeBased: timeBasedStops,
                 pattern: patternStops,
-                trailing: trailingStops,
-                currentPrice,
-                atr
-            });
+                recommended: this.calculateRecommendedStop({
+                    atrStops,
+                    timeBasedStops,
+                    technicalStops,
+                    volatilityStops,
+                    patternStops
+                }, technical.trend)
+            };
+
         } catch (error) {
-            logger.error('Error calculating stop loss:', error);
-            throw error;
+            logger.error('Error calculating stop loss levels:', error);
+            return {
+                error: error.message,
+                atr: null,
+                timeBased: null,
+                technical: null,
+                volatility: null,
+                pattern: null,
+                recommended: null
+            };
         }
     }
 
-    /**
-     * Calculate stops based on technical levels
-     */
-    calculateTechnicalStops({ currentPrice, support, resistance, patterns }) {
-        const stops = {
-            support_based: null,
-            resistance_based: null,
-            pattern_based: null
-        };
-
-        // Support-based stop for long positions
-        if (support) {
-            stops.support_based = support * (1 - this.SUPPORT_BUFFER);
-        }
-
-        // Resistance-based stop for short positions
-        if (resistance) {
-            stops.resistance_based = resistance * (1 + this.RESISTANCE_BUFFER);
-        }
-
-        return stops;
-    }
-
-    /**
-     * Calculate volatility-based (ATR) stops
-     */
-    calculateVolatilityStops({ currentPrice, atr, volatility }) {
-        const volatilityRatio = atr / currentPrice;
-        let multiplier;
-
-        if (volatilityRatio >= this.HIGH_VOLATILITY_THRESHOLD) {
-            multiplier = this.WIDE_ATR_MULTIPLIER;
-        } else if (volatilityRatio <= this.LOW_VOLATILITY_THRESHOLD) {
-            multiplier = this.TIGHT_ATR_MULTIPLIER;
-        } else {
-            multiplier = this.NORMAL_ATR_MULTIPLIER;
+    calculateATRStops(currentPrice, atr) {
+        if (!atr) {
+            return {
+                tight: null,
+                normal: null,
+                wide: null
+            };
         }
 
         return {
-            tight: currentPrice - (atr * this.TIGHT_ATR_MULTIPLIER),
-            normal: currentPrice - (atr * this.NORMAL_ATR_MULTIPLIER),
-            wide: currentPrice - (atr * this.WIDE_ATR_MULTIPLIER),
-            recommended: currentPrice - (atr * multiplier)
-        };
-    }
-
-    /**
-     * Calculate time-based stops
-     */
-    calculateTimeBasedStops({ currentPrice, atr, volatility }) {
-        return {
-            short_term: {
-                initial: currentPrice - (atr * 1.5),
-                trailing: true,
-                period: this.SHORT_TERM_PERIOD
+            tight: {
+                price: currentPrice - (atr * this.TIGHT_ATR_MULTIPLIER),
+                distance: atr * this.TIGHT_ATR_MULTIPLIER,
+                percentage: (atr * this.TIGHT_ATR_MULTIPLIER / currentPrice) * 100
             },
-            medium_term: {
-                initial: currentPrice - (atr * 2.0),
-                trailing: true,
-                period: this.MEDIUM_TERM_PERIOD
+            normal: {
+                price: currentPrice - (atr * this.NORMAL_ATR_MULTIPLIER),
+                distance: atr * this.NORMAL_ATR_MULTIPLIER,
+                percentage: (atr * this.NORMAL_ATR_MULTIPLIER / currentPrice) * 100
             },
-            long_term: {
-                initial: currentPrice - (atr * 2.5),
-                trailing: true,
-                period: this.LONG_TERM_PERIOD
+            wide: {
+                price: currentPrice - (atr * this.WIDE_ATR_MULTIPLIER),
+                distance: atr * this.WIDE_ATR_MULTIPLIER,
+                percentage: (atr * this.WIDE_ATR_MULTIPLIER / currentPrice) * 100
             }
         };
     }
 
-    /**
-     * Calculate pattern-specific stops
-     */
-    calculatePatternStops({ currentPrice, patterns, atr }) {
-        const stops = {
-            pattern_specific: null,
-            confidence: 0
+    calculateTimeBasedStops(historicalData) {
+        const periods = {
+            short: this.SHORT_TERM_PERIOD,
+            medium: this.MEDIUM_TERM_PERIOD,
+            long: this.LONG_TERM_PERIOD
         };
 
-        if (patterns?.dominantPattern) {
-            const { type, confidence } = patterns.dominantPattern;
-            
-            switch (type) {
-                case 'HEAD_AND_SHOULDERS':
-                    stops.pattern_specific = currentPrice - (atr * 1.5);
-                    break;
-                case 'DOUBLE_BOTTOM':
-                    stops.pattern_specific = currentPrice - (atr * 2.0);
-                    break;
-                case 'TRIANGLE':
-                    stops.pattern_specific = currentPrice - (atr * 1.75);
-                    break;
-                default:
-                    stops.pattern_specific = currentPrice - (atr * 2.0);
+        const result = {};
+
+        for (const [term, period] of Object.entries(periods)) {
+            const relevantData = historicalData.slice(0, period);
+            if (relevantData.length < period) {
+                result[term] = null;
+                continue;
             }
-            
-            stops.confidence = confidence;
+
+            const lowest = Math.min(...relevantData.map(d => d.low));
+            result[term] = {
+                price: lowest,
+                distance: relevantData[0].close - lowest,
+                percentage: ((relevantData[0].close - lowest) / relevantData[0].close) * 100
+            };
         }
 
-        return stops;
+        return result;
     }
 
-    /**
-     * Calculate trailing stops
-     */
-    calculateTrailingStops({ currentPrice, atr, volatility, patterns }) {
-        const baseTrailingDistance = atr * this.NORMAL_ATR_MULTIPLIER;
-        const volatilityAdjustment = this.calculateVolatilityAdjustment(volatility);
-        const patternAdjustment = this.calculatePatternAdjustment(patterns);
-
-        // Adjust trailing distance based on market conditions
-        const adjustedDistance = baseTrailingDistance * volatilityAdjustment * patternAdjustment;
-
-        return {
-            distance: adjustedDistance,
-            activation_threshold: currentPrice * (1 + this.TRAILING_ACTIVATION_THRESHOLD),
-            step_size: adjustedDistance * this.TRAILING_STEP_SIZE,
-            adjustment_factors: {
-                volatility: volatilityAdjustment,
-                pattern: patternAdjustment
-            }
+    calculateTechnicalStops(currentPrice, technical) {
+        const result = {
+            support: null,
+            resistance: null,
+            moving_average: null
         };
+
+        if (technical.supportLevels?.length > 0) {
+            const nearestSupport = technical.supportLevels[0];
+            result.support = {
+                price: nearestSupport * (1 - this.SUPPORT_BUFFER),
+                distance: currentPrice - (nearestSupport * (1 - this.SUPPORT_BUFFER)),
+                percentage: this.SUPPORT_BUFFER * 100
+            };
+        }
+
+        if (technical.resistanceLevels?.length > 0) {
+            const nearestResistance = technical.resistanceLevels[0];
+            result.resistance = {
+                price: nearestResistance * (1 + this.RESISTANCE_BUFFER),
+                distance: (nearestResistance * (1 + this.RESISTANCE_BUFFER)) - currentPrice,
+                percentage: this.RESISTANCE_BUFFER * 100
+            };
+        }
+
+        if (technical.sma?.value) {
+            result.moving_average = {
+                price: technical.sma.value,
+                distance: currentPrice - technical.sma.value,
+                percentage: ((currentPrice - technical.sma.value) / currentPrice) * 100
+            };
+        }
+
+        return result;
     }
 
-    /**
-     * Calculate volatility adjustment for trailing stops
-     */
-    calculateVolatilityAdjustment(volatility) {
-        const volatilityRatio = volatility.value || 0;
+    calculateVolatilityStops(currentPrice, historicalData) {
+        const volatility = this.calculateHistoricalVolatility(historicalData);
         
-        if (volatilityRatio >= this.HIGH_VOLATILITY_THRESHOLD) {
-            return 1.5; // Wider trailing stop in high volatility
-        } else if (volatilityRatio <= this.LOW_VOLATILITY_THRESHOLD) {
-            return 0.8; // Tighter trailing stop in low volatility
-        }
-        return 1.0;
+        return {
+            price: currentPrice * (1 - volatility),
+            distance: currentPrice * volatility,
+            percentage: volatility * 100,
+            volatilityLevel: this.determineVolatilityLevel(volatility)
+        };
     }
 
-    /**
-     * Calculate pattern adjustment for trailing stops
-     */
-    calculatePatternAdjustment(patterns) {
-        if (!patterns?.dominantPattern) return 1.0;
+    calculatePatternStops(currentPrice, patterns) {
+        const result = {};
 
-        const { type, confidence } = patterns.dominantPattern;
-        const patternConfig = this.PATTERN_MULTIPLIERS[type];
-
-        if (!patternConfig) return 1.0;
-
-        if (confidence >= patternConfig.confidence_threshold) {
-            return patternConfig.multiplier;
+        if (!Array.isArray(patterns)) {
+            return null;
         }
-        
-        // Scale multiplier based on confidence if below threshold
-        return 1.0 + (patternConfig.multiplier - 1.0) * (confidence / patternConfig.confidence_threshold);
-    }
 
-    /**
-     * Consolidate all stop types and provide final recommendations
-     */
-    consolidateStopLevels({
-        technical,
-        volatility,
-        timeBased,
-        pattern,
-        trailing,
-        currentPrice,
-        atr
-    }) {
-        const recommendations = {
-            conservative: {
-                initial: Math.min(
-                    technical.support_based || Infinity,
-                    volatility.wide,
-                    timeBased.long_term.initial,
-                    pattern.pattern_specific || Infinity
-                ),
-                trailing: true,
-                timeframe: 'LONG_TERM',
-                risk_percent: ((currentPrice - volatility.wide) / currentPrice) * 100
-            },
-            moderate: {
-                initial: Math.min(
-                    volatility.normal,
-                    timeBased.medium_term.initial,
-                    pattern.pattern_specific || Infinity
-                ),
-                trailing: true,
-                timeframe: 'MEDIUM_TERM',
-                risk_percent: ((currentPrice - volatility.normal) / currentPrice) * 100
-            },
-            aggressive: {
-                initial: Math.min(
-                    volatility.tight,
-                    timeBased.short_term.initial
-                ),
-                trailing: true,
-                timeframe: 'SHORT_TERM',
-                risk_percent: ((currentPrice - volatility.tight) / currentPrice) * 100
+        for (const pattern of patterns) {
+            if (!pattern || !pattern.type) continue;
+            
+            const config = this.PATTERN_MULTIPLIERS[pattern.type];
+            if (config && pattern.confidence >= config.confidence_threshold) {
+                result[pattern.type.toLowerCase()] = {
+                    price: currentPrice * (1 - (pattern.stopLoss * config.multiplier)),
+                    distance: currentPrice * pattern.stopLoss * config.multiplier,
+                    percentage: pattern.stopLoss * config.multiplier * 100,
+                    confidence: pattern.confidence
+                };
             }
-        };
+        }
 
-        // Determine optimal stop based on market conditions
-        const optimalStop = this.determineOptimalStop({
-            recommendations,
-            pattern,
-            volatility,
-            currentPrice,
-            atr,
-            trailing
-        });
+        return Object.keys(result).length > 0 ? result : null;
+    }
+
+    calculateRecommendedStop(stops, trend) {
+        // Implement logic to select the most appropriate stop loss level
+        // based on current market conditions and analysis
+        const candidates = [];
+
+        if (stops.atr?.normal) {
+            candidates.push({
+                price: stops.atr.normal.price,
+                source: 'ATR',
+                weight: 1.0
+            });
+        }
+
+        if (stops.technical?.support) {
+            candidates.push({
+                price: stops.technical.support.price,
+                source: 'Technical',
+                weight: 0.8
+            });
+        }
+
+        if (stops.volatility) {
+            candidates.push({
+                price: stops.volatility.price,
+                source: 'Volatility',
+                weight: 0.6
+            });
+        }
+
+        if (candidates.length === 0) {
+            return null;
+        }
+
+        // Weight the candidates based on trend
+        if (trend) {
+            candidates.forEach(c => {
+                if (trend === 'UPTREND') {
+                    c.weight *= 1.2;
+                } else if (trend === 'DOWNTREND') {
+                    c.weight *= 0.8;
+                }
+            });
+        }
+
+        // Select the highest weighted stop level
+        const selected = candidates.reduce((prev, curr) => 
+            prev.weight > curr.weight ? prev : curr
+        );
 
         return {
-            recommendations,
-            optimal: optimalStop,
-            technical_levels: technical,
-            volatility_based: volatility,
-            time_based: timeBased,
-            pattern_based: pattern,
-            trailing_stop: trailing
+            price: selected.price,
+            source: selected.source,
+            confidence: selected.weight
         };
     }
 
-    /**
-     * Determine the optimal stop loss based on all factors
-     */
-    determineOptimalStop({
-        recommendations,
-        pattern,
-        volatility,
-        currentPrice,
-        atr,
-        trailing
-    }) {
-        let optimal;
-
-        // Use pattern-based stop if available and confident
-        if (pattern.confidence > 0.7) {
-            optimal = recommendations.conservative;
-        }
-        // Use wider stops in high volatility
-        else if (atr / currentPrice >= this.HIGH_VOLATILITY_THRESHOLD) {
-            optimal = recommendations.conservative;
-        }
-        // Use tighter stops in low volatility
-        else if (atr / currentPrice <= this.LOW_VOLATILITY_THRESHOLD) {
-            optimal = recommendations.aggressive;
-        }
-        // Default to moderate stops
-        else {
-            optimal = recommendations.moderate;
+    calculateHistoricalVolatility(historicalData) {
+        const returns = [];
+        for (let i = 1; i < historicalData.length; i++) {
+            returns.push(Math.log(historicalData[i].close / historicalData[i - 1].close));
         }
 
-        // Adjust optimal stop based on trailing stop conditions
-        if (trailing.activation_threshold <= currentPrice) {
-            optimal.trailing = true;
-            optimal.initial = Math.max(optimal.initial, currentPrice - trailing.distance);
-        }
-
-        return {
-            ...optimal,
-            reason: this.getOptimalStopReason(pattern, volatility, currentPrice, atr)
-        };
+        const mean = returns.reduce((a, b) => a + b, 0) / returns.length;
+        const variance = returns.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / returns.length;
+        return Math.sqrt(variance);
     }
 
-    /**
-     * Get the reasoning behind the optimal stop selection
-     */
-    getOptimalStopReason(pattern, volatility, currentPrice, atr) {
-        if (pattern.confidence > 0.7) {
-            return 'HIGH_CONFIDENCE_PATTERN';
-        } else if (atr / currentPrice >= this.HIGH_VOLATILITY_THRESHOLD) {
-            return 'HIGH_VOLATILITY';
-        } else if (atr / currentPrice <= this.LOW_VOLATILITY_THRESHOLD) {
-            return 'LOW_VOLATILITY';
-        }
-        return 'BALANCED_CONDITIONS';
+    determineVolatilityLevel(volatility) {
+        if (volatility >= this.HIGH_VOLATILITY_THRESHOLD) return 'HIGH';
+        if (volatility <= this.LOW_VOLATILITY_THRESHOLD) return 'LOW';
+        return 'MEDIUM';
     }
 }

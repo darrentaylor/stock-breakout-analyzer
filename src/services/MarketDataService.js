@@ -76,20 +76,59 @@ export class MarketDataService {
     }
   }
 
+  async fetchPriceData(symbol) {
+    try {
+      // Check cache first
+      const cachedData = await this.dataManager.getCachedData(symbol, 'price');
+      if (cachedData && this.isDataFresh(cachedData.timestamp)) {
+        logger.debug(`Using cached price data for ${symbol}`);
+        return cachedData.data;
+      }
+
+      const data = await this.alphaVantageService.getQuote(symbol);
+      if (!data) {
+        throw new Error(`No price data available for ${symbol}`);
+      }
+
+      const priceData = {
+        symbol: symbol,
+        current: parseFloat(data['Global Quote']['05. price']),
+        previousClose: parseFloat(data['Global Quote']['08. previous close']),
+        change: parseFloat(data['Global Quote']['09. change']),
+        changePercent: parseFloat(data['Global Quote']['10. change percent'].replace('%', '')),
+        timestamp: new Date().toISOString()
+      };
+
+      // Cache the data
+      await this.dataManager.cacheData(symbol, {
+        data: priceData,
+        timestamp: Date.now()
+      }, 'price');
+
+      return priceData;
+    } catch (error) {
+      logger.error(`Error fetching price data for ${symbol}:`, error);
+      throw error;
+    }
+  }
+
   isDataFresh(timestamp) {
     return Date.now() - timestamp < this.CACHE_DURATION;
   }
 
   formatHistoricalData(data) {
-    return data.map(item => ({
-      timestamp: new Date(item.timestamp).getTime(),
-      open: parseFloat(item.open),
-      high: parseFloat(item.high),
-      low: parseFloat(item.low),
-      close: parseFloat(item.close),
-      volume: parseInt(item.volume),
-      adjusted_close: parseFloat(item.adjusted_close || item.close)
-    })).sort((a, b) => a.timestamp - b.timestamp);
+    return data.map(item => {
+      const volume = parseFloat(item.volume);
+      return {
+        timestamp: new Date(item.timestamp).getTime(),
+        open: parseFloat(item.open),
+        high: parseFloat(item.high),
+        low: parseFloat(item.low),
+        close: parseFloat(item.close),
+        volume: isNaN(volume) ? 0 : volume,
+        adjusted_close: parseFloat(item.adjusted_close || item.close)
+      };
+    }).sort((a, b) => a.timestamp - b.timestamp);
   }
 
   formatMarketData(data) {
