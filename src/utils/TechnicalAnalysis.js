@@ -103,47 +103,80 @@ export class TechnicalAnalysis {
     }
   }
 
-  calculateBollingerBands(data) {
-    const bbCalculator = new BollingerBands(data, this.bbPeriod, this.bbStdDev);
-    const bands = bbCalculator.calculate();
-    const latest = bands[bands.length - 1];
+  calculateBollingerBands(marketData) {
+    try {
+      const bb = new BollingerBands(marketData, this.bbPeriod, this.bbStdDev);
+      const bands = bb.calculate();
+      
+      // Get the most recent band data
+      const current = bands[0];
+      const previous = bands[1];
+      
+      // Calculate trend strength and volatility
+      const bandwidthTrend = current.bandwidth - previous.bandwidth;
+      const volatilityState = current.bandwidth > previous.bandwidth ? 'INCREASING' : 'DECREASING';
+      
+      // Analyze price position relative to bands
+      const currentPrice = marketData[0].close;
+      const pricePosition = currentPrice > current.upper ? 'ABOVE' :
+                          currentPrice < current.lower ? 'BELOW' : 'INSIDE';
+      
+      // Analyze squeeze conditions
+      const squeezeAnalysis = {
+        isActive: current.squeeze.isSqueezing,
+        strength: current.squeeze.bandwidthPercentile < 20 ? 'STRONG' :
+                 current.squeeze.bandwidthPercentile < 40 ? 'MODERATE' : 'WEAK',
+        duration: bands.filter(b => b.squeeze.isSqueezing).length,
+        bandwidthTrend: bandwidthTrend > 0 ? 'EXPANDING' : 'CONTRACTING'
+      };
 
-    // Calculate historical bandwidth stats for context
-    const recentBands = bands.slice(-50);  // Last 50 periods
-    const bandwidths = recentBands.map(b => b.bandwidth);
-    const maxBandwidth = Math.max(...bandwidths);
-    const minBandwidth = Math.min(...bandwidths);
-    const avgBandwidth = bandwidths.reduce((a, b) => a + b, 0) / bandwidths.length;
+      return {
+        current: {
+          upper: current.upper,
+          middle: current.middle,
+          lower: current.lower,
+          bandwidth: current.bandwidth
+        },
+        pricePosition,
+        volatility: {
+          state: volatilityState,
+          bandwidth: current.bandwidth,
+          trend: bandwidthTrend
+        },
+        squeeze: squeezeAnalysis,
+        signal: this.generateBollingerSignal(pricePosition, squeezeAnalysis, volatilityState)
+      };
+    } catch (error) {
+      console.error('Error calculating Bollinger Bands:', error);
+      return null;
+    }
+  }
 
-    // Determine volatility state
-    const volatilityState = 
-      latest.bandwidth > avgBandwidth * 1.5 ? 'HIGH' :
-      latest.bandwidth < avgBandwidth * 0.5 ? 'LOW' : 'NORMAL';
+  generateBollingerSignal(pricePosition, squeeze, volatility) {
+    // Generate trading signals based on Bollinger Bands and squeeze
+    if (squeeze.isActive) {
+      return {
+        type: 'SQUEEZE',
+        action: 'PREPARE',
+        strength: squeeze.strength,
+        message: `Price squeeze detected - prepare for potential breakout. Squeeze strength: ${squeeze.strength}`
+      };
+    }
 
-    // Enhanced squeeze detection
-    const squeezeIntensity = 
-      latest.squeeze.bandwidthPercentile < 20 ? 'STRONG' :
-      latest.squeeze.bandwidthPercentile < 40 ? 'MODERATE' : 'NONE';
+    if (squeeze.bandwidthTrend === 'EXPANDING' && volatility === 'INCREASING') {
+      return {
+        type: 'BREAKOUT',
+        action: pricePosition === 'ABOVE' ? 'BUY' : pricePosition === 'BELOW' ? 'SELL' : 'WAIT',
+        strength: 'STRONG',
+        message: `Potential ${pricePosition === 'ABOVE' ? 'bullish' : 'bearish'} breakout with expanding bands`
+      };
+    }
 
     return {
-      upper: latest.upper,
-      middle: latest.middle,
-      lower: latest.lower,
-      width: latest.bandwidth,
-      squeeze: {
-        active: latest.squeeze.isSqueezing,
-        intensity: squeezeIntensity,
-        bandwidthPercentile: latest.squeeze.bandwidthPercentile,
-        currentBandwidth: latest.squeeze.currentBandwidth,
-        averageBandwidth: latest.squeeze.averageBandwidth
-      },
-      volatility: {
-        state: volatilityState,
-        current: latest.bandwidth,
-        average: avgBandwidth,
-        max: maxBandwidth,
-        min: minBandwidth
-      }
+      type: 'NORMAL',
+      action: 'MONITOR',
+      strength: 'MODERATE',
+      message: 'Normal market conditions - monitor for setup'
     };
   }
 
@@ -486,8 +519,8 @@ export class TechnicalAnalysis {
     const currentPrice = data[0].close;
     
     // Breakout signals
-    const bbSignal = currentPrice > bollingerBands.upper ? 'LONG' :
-                    currentPrice < bollingerBands.lower ? 'SHORT' : 'NEUTRAL';
+    const bbSignal = currentPrice > bollingerBands.current.upper ? 'LONG' :
+                    currentPrice < bollingerBands.current.lower ? 'SHORT' : 'NEUTRAL';
     
     const macdSignal = macd.histogram > 0 ? 'LONG' :
                       macd.histogram < 0 ? 'SHORT' : 'NEUTRAL';

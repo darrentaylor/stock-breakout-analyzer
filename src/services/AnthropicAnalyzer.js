@@ -16,7 +16,7 @@ class AnthropicAnalyzer {
         const marketData = data.marketData;
         const technicalData = data.technicalData;
         
-        return `As an expert trading analyst, analyze this market data and provide actionable trading recommendations. Focus on technical analysis, breakout patterns, and clear entry/exit points. Return ONLY a JSON object with the following structure, no other text:
+        return `As an expert trading analyst, analyze this market data with special attention to Bollinger Bands squeeze conditions and potential breakouts. Focus on technical analysis, breakout patterns, and clear entry/exit points. Return ONLY a JSON object with the following structure, no other text:
 {
     "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
     "confidence": <number 0-100>,
@@ -38,6 +38,16 @@ class AnthropicAnalyzer {
                 "support": <number>,
                 "resistance": <number>
             }
+        },
+        "volatility_analysis": {
+            "bollinger_squeeze": {
+                "active": true | false,
+                "strength": "STRONG" | "MODERATE" | "WEAK",
+                "duration": <number>,
+                "bandwidth_trend": "EXPANDING" | "CONTRACTING"
+            },
+            "atr_trend": "INCREASING" | "DECREASING",
+            "volatility_state": "HIGH" | "MEDIUM" | "LOW"
         },
         "risk_assessment": {
             "overall": "LOW" | "MEDIUM" | "HIGH",
@@ -100,7 +110,7 @@ ${JSON.stringify(marketData.slice(0, 5), null, 2)}
 Technical Indicators:
 ${JSON.stringify(technicalData, null, 2)}
 
-Provide a comprehensive analysis with specific, actionable trade recommendations based on technical analysis, breakout patterns, and risk management principles.`;
+Provide a comprehensive analysis with specific, actionable trade recommendations based on technical analysis, breakout patterns, and risk management principles. Pay special attention to Bollinger Bands squeeze conditions as potential breakout setups.`;
     }
 
     async analyze(data) {
@@ -260,9 +270,16 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
             console.log(`Signal: ${rec.action.padEnd(4)} | Type: ${rec.type}`);
             console.log(`Risk:   ${analysis.analysis?.risk_assessment?.overall.padEnd(4)} | Time: ${rec.timeframe}`);
             console.log(`Confidence: ${analysis.confidence}%`);
+            
+            // Add Bollinger Squeeze Status
+            if (analysis.analysis?.volatility_analysis?.bollinger_squeeze) {
+                const squeeze = analysis.analysis.volatility_analysis.bollinger_squeeze;
+                const squeezeEmoji = squeeze.active ? '🔄' : '➡️';
+                console.log(`Squeeze: ${squeezeEmoji} ${squeeze.active ? 'ACTIVE' : 'INACTIVE'} (${squeeze.strength})`);
+            }
             console.log('──────────────────\n');
 
-            // Key Price Levels - Most important information first
+            // Key Price Levels
             console.log('💰 KEY PRICE LEVELS');
             console.log('──────────────────');
             console.log(`Current Price: $${analysis.marketData?.[0]?.close?.toFixed(2) || 'N/A'}`);
@@ -274,7 +291,24 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
             }
             console.log('──────────────────\n');
 
-            // Trade Setup - Clear entry and exit points
+            // Volatility Analysis
+            if (analysis.analysis?.volatility_analysis) {
+                console.log('📈 VOLATILITY ANALYSIS');
+                console.log('──────────────────');
+                const vol = analysis.analysis.volatility_analysis;
+                if (vol.bollinger_squeeze) {
+                    console.log('Bollinger Squeeze:');
+                    console.log(`• Status:    ${vol.bollinger_squeeze.active ? '🔄 ACTIVE' : '➡️ INACTIVE'}`);
+                    console.log(`• Strength:  ${vol.bollinger_squeeze.strength}`);
+                    console.log(`• Duration:  ${vol.bollinger_squeeze.duration} periods`);
+                    console.log(`• Bandwidth: ${vol.bollinger_squeeze.bandwidth_trend}`);
+                }
+                console.log(`\nVolatility State: ${vol.volatility_state}`);
+                console.log(`ATR Trend:       ${vol.atr_trend}`);
+                console.log('──────────────────\n');
+            }
+
+            // Trade Setup
             console.log('🎯 TRADE SETUP');
             console.log('──────────────────');
             console.log('Entry Strategy:');
@@ -300,7 +334,7 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
             }
             console.log('──────────────────\n');
 
-            // Technical Analysis Summary - Key indicators and patterns
+            // Technical Analysis Summary
             if (analysis.analysis?.technical_factors?.length > 0) {
                 console.log('📈 TECHNICAL SIGNALS');
                 console.log('──────────────────');
@@ -329,7 +363,7 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
                 console.log('──────────────────\n');
             }
 
-            // Risk Factors - Important warnings and considerations
+            // Risk Factors
             if (analysis.analysis?.risk_assessment?.risk_factors?.length > 0) {
                 console.log('⚠️ RISK FACTORS');
                 console.log('──────────────────');
