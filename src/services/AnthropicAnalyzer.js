@@ -1,18 +1,114 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger.js';
 
-export class AnthropicAnalyzer {
+class AnthropicAnalyzer {
     constructor(apiKey) {
+        this.apiKey = apiKey;
         this.anthropic = new Anthropic({ apiKey });
     }
 
-    async analyzeStock(symbol, marketData, technicalData) {
+    safelyFormatNumber(number) {
+        if (number === null || number === undefined) return 'N/A';
+        return typeof number === 'number' ? number.toFixed(2) : number;
+    }
+
+    constructPrompt(data) {
+        const marketData = data.marketData;
+        const technicalData = data.technicalData;
+        
+        return `As an expert trading analyst, analyze this market data and provide actionable trading recommendations. Focus on technical analysis, breakout patterns, and clear entry/exit points. Return ONLY a JSON object with the following structure, no other text:
+{
+    "sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
+    "confidence": <number 0-100>,
+    "analysis": {
+        "technical_factors": [
+            {
+                "indicator": "<indicator name>",
+                "signal": "BULLISH" | "BEARISH" | "NEUTRAL",
+                "strength": "STRONG" | "MODERATE" | "WEAK",
+                "description": "<specific insight>"
+            }
+        ],
+        "breakout_analysis": {
+            "pattern": "<pattern type>",
+            "confirmation": true | false,
+            "target_price": <number>,
+            "key_levels": {
+                "breakout_level": <number>,
+                "support": <number>,
+                "resistance": <number>
+            }
+        },
+        "risk_assessment": {
+            "overall": "LOW" | "MEDIUM" | "HIGH",
+            "volatility": "LOW" | "MEDIUM" | "HIGH",
+            "market_condition": "TRENDING" | "RANGING" | "VOLATILE",
+            "risk_factors": [
+                {
+                    "factor": "<risk factor>",
+                    "impact": "HIGH" | "MEDIUM" | "LOW",
+                    "mitigation": "<mitigation strategy>"
+                }
+            ]
+        }
+    },
+    "trade_recommendation": {
+        "action": "BUY" | "SELL" | "HOLD",
+        "type": "BREAKOUT" | "TREND_FOLLOWING" | "REVERSAL" | "RANGE_BOUND",
+        "timeframe": "SHORT_TERM" | "MEDIUM_TERM" | "LONG_TERM",
+        "entry": {
+            "price": <number>,
+            "condition": "<entry condition>",
+            "urgency": "IMMEDIATE" | "WAIT_FOR_PULLBACK" | "LIMIT_ORDER"
+        },
+        "exits": {
+            "stop_loss": {
+                "price": <number>,
+                "type": "FIXED" | "TRAILING" | "ATR_BASED",
+                "reasoning": "<stop loss explanation>"
+            },
+            "take_profit": {
+                "price": <number>,
+                "type": "FIXED" | "SCALED" | "TRAILING",
+                "targets": [
+                    {
+                        "price": <number>,
+                        "size": "<percentage of position>"
+                    }
+                ]
+            }
+        },
+        "position_sizing": {
+            "risk_percentage": <number>,
+            "leverage": <number if applicable>,
+            "max_position_size": "<percentage of portfolio>"
+        }
+    },
+    "execution_strategy": {
+        "entry_approach": "<how to enter the trade>",
+        "exit_management": "<how to manage exits>",
+        "risk_management": "<specific risk management instructions>",
+        "key_warnings": [
+            "<important watch-outs>"
+        ]
+    }
+}
+
+Market Data (last 5 days):
+${JSON.stringify(marketData.slice(0, 5), null, 2)}
+
+Technical Indicators:
+${JSON.stringify(technicalData, null, 2)}
+
+Provide a comprehensive analysis with specific, actionable trade recommendations based on technical analysis, breakout patterns, and risk management principles.`;
+    }
+
+    async analyze(data) {
         try {
-            console.log('Requesting Anthropic analysis...');
-            const prompt = this.constructPrompt(symbol, marketData, technicalData);
+            const prompt = this.constructPrompt(data);
             
             const response = await this.anthropic.messages.create({
-                model: "claude-3-sonnet-20240229",
+                model: "claude-3-5-sonnet-20241022",
                 max_tokens: 1000,
                 messages: [{
                     role: "user",
@@ -21,193 +117,259 @@ export class AnthropicAnalyzer {
                 temperature: 0.7
             });
 
-            // Extract the content from the response
-            const analysis = response.content[0].text;
-            console.log('Anthropic Analysis Response:', analysis); // Debug log
+            let analysis = response.content[0].text;
             
-            // Process the response
-            const result = this.processAIResponse(analysis, technicalData);
-            console.log('Processed Analysis:', JSON.stringify(result, null, 2)); // Debug log
-            
-            return result;
+            // Try to extract JSON if it's wrapped in other text
+            const jsonMatch = analysis.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                analysis = jsonMatch[0];
+            }
 
+            let parsedAnalysis;
+            try {
+                parsedAnalysis = JSON.parse(analysis);
+                // Add market data for display purposes
+                parsedAnalysis.marketData = data.marketData;
+                return parsedAnalysis;
+            } catch (e) {
+                console.warn('Failed to parse Anthropic response as JSON:', e);
+                // Provide a default structured response
+                return {
+                    sentiment: 'NEUTRAL',
+                    confidence: 50,
+                    analysis: {
+                        technical_factors: [],
+                        risk_assessment: {
+                            overall: 'MEDIUM',
+                            volatility: 'MEDIUM',
+                            market_condition: 'TRENDING',
+                            risk_factors: []
+                        },
+                        breakout_analysis: {
+                            pattern: '',
+                            confirmation: false,
+                            target_price: data.marketData[0].close,
+                            key_levels: {
+                                breakout_level: data.marketData[0].close,
+                                support: data.marketData[0].low,
+                                resistance: data.marketData[0].high
+                            }
+                        }
+                    },
+                    trade_recommendation: {
+                        action: 'HOLD',
+                        type: 'BREAKOUT',
+                        timeframe: 'SHORT_TERM',
+                        entry: {
+                            price: data.marketData[0].close,
+                            condition: 'Wait for confirmation',
+                            urgency: 'WAIT_FOR_PULLBACK'
+                        },
+                        exits: {
+                            stop_loss: {
+                                price: data.marketData[0].low,
+                                type: 'FIXED',
+                                reasoning: 'Using recent low as support'
+                            },
+                            take_profit: {
+                                price: data.marketData[0].high,
+                                type: 'FIXED',
+                                targets: []
+                            }
+                        },
+                        position_sizing: {
+                            risk_percentage: 1,
+                            leverage: 1,
+                            max_position_size: '1%'
+                        }
+                    },
+                    execution_strategy: {
+                        entry_approach: 'Wait for price confirmation before entering',
+                        exit_management: 'Use fixed stops and targets',
+                        risk_management: 'Limit position size to 1% of portfolio',
+                        key_warnings: ['Analysis may be incomplete due to parsing error']
+                    },
+                    marketData: data.marketData
+                };
+            }
         } catch (error) {
-            console.error('Anthropic analysis failed:', error.message);
-            logger.error('Anthropic Analysis Error:', error);
-            
-            // Return a default response structure
+            console.error('Error in Anthropic analysis:', error);
             return {
-                score: {
-                    total: technicalData.breakout.probability,
-                    technical: Math.round(technicalData.breakout.probability * 0.4),
-                    volume: Math.round(technicalData.breakout.probability * 0.3),
-                    momentum: Math.round(technicalData.breakout.probability * 0.3)
-                },
-                signals: {
-                    primary: 'NEUTRAL',
-                    secondary: [],
-                    confidence: technicalData.breakout.probability
-                },
+                sentiment: 'NEUTRAL',
+                confidence: 50,
                 analysis: {
-                    summary: 'Analysis failed. Using technical indicators only.',
-                    technical: technicalData,
-                    breakoutContext: {
-                        direction: technicalData.breakout.direction,
-                        strength: 'MEDIUM',
-                        support: technicalData.bollingerBands.lower,
-                        resistance: technicalData.bollingerBands.upper
+                    technical_factors: [],
+                    risk_assessment: {
+                        overall: 'HIGH',
+                        volatility: 'HIGH',
+                        market_condition: 'VOLATILE',
+                        risk_factors: [{
+                            factor: 'Analysis Error',
+                            impact: 'HIGH',
+                            mitigation: 'Manual review required'
+                        }]
                     }
-                }
-            };
-        }
-    }
-
-    constructPrompt(symbol, marketData, technicalData) {
-        const recentData = marketData.slice(0, 10); // Last 10 days
-        const latestPrice = recentData[0].close;
-        const priceChange = ((latestPrice - recentData[1].close) / recentData[1].close * 100).toFixed(2);
-        
-        return `
-Analyze ${symbol} stock with the following data:
-
-Current Price: $${latestPrice}
-Daily Change: ${priceChange}%
-
-Technical Indicators:
-- RSI (14): ${technicalData.rsi}
-- MACD: ${technicalData.macd.histogram}
-- Bollinger Bands: 
-  Upper: $${technicalData.bollingerBands.upper.toFixed(2)}
-  Middle: $${technicalData.bollingerBands.middle.toFixed(2)}
-  Lower: $${technicalData.bollingerBands.lower.toFixed(2)}
-
-Advanced Indicators:
-- ATR (14): ${technicalData.atr.value.toFixed(4)}
-  Volatility: ${technicalData.atr.volatility}
-  Risk Level: ${technicalData.atr.risk_level}
-
-- MFI (14): ${technicalData.mfi.value.toFixed(2)}
-  Signal: ${technicalData.mfi.signal}
-  Institutional Activity: ${technicalData.mfi.institutional_activity.type} (${technicalData.mfi.institutional_activity.intensity} intensity)
-
-Fibonacci Levels:
-${Object.entries(technicalData.fibonacci.levels)
-    .map(([level, price]) => `  ${level}: $${price.toFixed(2)}`)
-    .join('\n')}
-Nearest Fib Level: ${technicalData.fibonacci.nearest.level} at $${technicalData.fibonacci.nearest.price.toFixed(2)}
-
-Volume Analysis:
-- Current Volume: ${recentData[0].volume.toLocaleString()}
-- Average Volume: ${technicalData.volume.averages.twentyDay.toLocaleString()}
-- Volume Trend: ${technicalData.volume.trend}
-
-Breakout Analysis:
-- Direction: ${technicalData.breakout.direction}
-- Probability: ${technicalData.breakout.probability}%
-- Risk Level: ${technicalData.atr.risk_level}
-
-Please provide:
-1. Overall market sentiment (BULLISH/BEARISH/NEUTRAL)
-2. Confidence level (0-100%)
-3. Key factors supporting your analysis
-4. Risk assessment based on ATR and MFI
-5. Price targets using Fibonacci levels
-6. Trading recommendations with precise entry/exit points
-`;
-    }
-
-    processAIResponse(aiResponse, technicalData) {
-        try {
-            // Extract sentiment and confidence from AI response
-            const sentiment = aiResponse.match(/SENTIMENT:?\s*(BULLISH|BEARISH|NEUTRAL)/i)?.[1] || 'NEUTRAL';
-            const confidence = parseInt(aiResponse.match(/CONFIDENCE:?\s*(\d+)/i)?.[1] || technicalData.breakout.probability);
-            
-            // Extract secondary signals
-            const secondarySignals = this.extractSecondarySignals(aiResponse);
-            
-            return {
-                score: {
-                    total: confidence,
-                    technical: Math.round(confidence * 0.4),
-                    volume: Math.round(confidence * 0.3),
-                    momentum: Math.round(confidence * 0.3)
                 },
-                signals: {
-                    primary: sentiment,
-                    secondary: secondarySignals,
-                    confidence: confidence
-                },
-                analysis: {
-                    summary: aiResponse,
-                    technical: technicalData,
-                    breakoutContext: this.extractBreakoutContext(aiResponse, technicalData)
-                }
-            };
-        } catch (error) {
-            console.error('Error processing AI response:', error);
-            // Return a default structure if processing fails
-            return {
-                score: {
-                    total: technicalData.breakout.probability,
-                    technical: Math.round(technicalData.breakout.probability * 0.4),
-                    volume: Math.round(technicalData.breakout.probability * 0.3),
-                    momentum: Math.round(technicalData.breakout.probability * 0.3)
-                },
-                signals: {
-                    primary: 'NEUTRAL',
-                    secondary: [],
-                    confidence: technicalData.breakout.probability
-                },
-                analysis: {
-                    summary: aiResponse,
-                    technical: technicalData,
-                    breakoutContext: {
-                        direction: technicalData.breakout.direction,
-                        strength: 'MEDIUM',
-                        support: technicalData.bollingerBands.lower,
-                        resistance: technicalData.bollingerBands.upper
+                trade_recommendation: {
+                    action: 'HOLD',
+                    type: 'BREAKOUT',
+                    timeframe: 'SHORT_TERM',
+                    entry: {
+                        price: data.marketData[0].close,
+                        condition: 'Analysis failed - manual review required',
+                        urgency: 'WAIT_FOR_PULLBACK'
+                    },
+                    exits: {
+                        stop_loss: {
+                            price: data.marketData[0].low,
+                            type: 'FIXED',
+                            reasoning: 'Using technical default'
+                        },
+                        take_profit: {
+                            price: data.marketData[0].high,
+                            type: 'FIXED',
+                            targets: []
+                        }
+                    },
+                    position_sizing: {
+                        risk_percentage: 1,
+                        leverage: 1,
+                        max_position_size: '1%'
                     }
-                }
+                },
+                execution_strategy: {
+                    entry_approach: 'DO NOT ENTER - Analysis failed',
+                    exit_management: 'Manual review required',
+                    risk_management: 'Avoid trading until analysis is fixed',
+                    key_warnings: ['Analysis failed due to API error', error.message]
+                },
+                marketData: data.marketData
             };
         }
     }
 
-    extractSecondarySignals(aiResponse) {
-        const signals = [];
-        
-        // Extract key factors and risks
-        const keyFactors = aiResponse.match(/KEY FACTORS:(.*?)(?=RISKS:|$)/s)?.[1];
-        const risks = aiResponse.match(/RISKS:(.*?)(?=PRICE TARGETS:|$)/s)?.[1];
-        
-        if (keyFactors) {
-            const factors = keyFactors.split('\n')
-                .filter(line => line.trim().startsWith('-'))
-                .map(line => line.trim().substring(1).trim());
-            signals.push(...factors);
-        }
-        
-        if (risks) {
-            const riskFactors = risks.split('\n')
-                .filter(line => line.trim().startsWith('-'))
-                .map(line => line.trim().substring(1).trim());
-            signals.push(...riskFactors);
-        }
-        
-        return signals.slice(0, 5); // Return top 5 signals
-    }
+    async displayAnalysis(analysis) {
+        console.log('\n🎯 TRADE RECOMMENDATION');
+        console.log('═══════════════════════════════\n');
 
-    extractBreakoutContext(aiResponse, technicalData) {
-        // Extract price targets
-        const priceTargets = aiResponse.match(/PRICE TARGETS:(.*?)(?=RECOMMENDATION:|$)/s)?.[1] || '';
-        const supportMatch = priceTargets.match(/support.*?\$?([\d.]+)/i);
-        const resistanceMatch = priceTargets.match(/resistance.*?\$?([\d.]+)/i);
-        
-        return {
-            direction: technicalData.breakout.direction,
-            strength: technicalData.breakout.probability > 70 ? 'STRONG' : 
-                     technicalData.breakout.probability > 50 ? 'MEDIUM' : 'WEAK',
-            support: supportMatch ? parseFloat(supportMatch[1]) : technicalData.bollingerBands.lower,
-            resistance: resistanceMatch ? parseFloat(resistanceMatch[1]) : technicalData.bollingerBands.upper
-        };
+        // Quick Summary Box
+        if (analysis.trade_recommendation) {
+            const rec = analysis.trade_recommendation;
+            console.log('📊 QUICK SUMMARY');
+            console.log('──────────────────');
+            console.log(`Signal: ${rec.action.padEnd(4)} | Type: ${rec.type}`);
+            console.log(`Risk:   ${analysis.analysis?.risk_assessment?.overall.padEnd(4)} | Time: ${rec.timeframe}`);
+            console.log(`Confidence: ${analysis.confidence}%`);
+            console.log('──────────────────\n');
+
+            // Key Price Levels - Most important information first
+            console.log('💰 KEY PRICE LEVELS');
+            console.log('──────────────────');
+            console.log(`Current Price: $${analysis.marketData?.[0]?.close?.toFixed(2) || 'N/A'}`);
+            if (analysis.analysis?.breakout_analysis?.key_levels) {
+                const levels = analysis.analysis.breakout_analysis.key_levels;
+                console.log(`Breakout Level: $${levels.breakout_level.toFixed(2)}`);
+                console.log(`Resistance:     $${levels.resistance.toFixed(2)}`);
+                console.log(`Support:       $${levels.support.toFixed(2)}`);
+            }
+            console.log('──────────────────\n');
+
+            // Trade Setup - Clear entry and exit points
+            console.log('🎯 TRADE SETUP');
+            console.log('──────────────────');
+            console.log('Entry Strategy:');
+            console.log(`• Price:     $${rec.entry.price.toFixed(2)}`);
+            console.log(`• Condition: ${rec.entry.condition}`);
+            console.log(`• Timing:    ${rec.entry.urgency}\n`);
+
+            console.log('Risk Management:');
+            console.log(`• Stop Loss: $${rec.exits.stop_loss.price.toFixed(2)} (${rec.exits.stop_loss.type})`);
+            console.log(`• Risk Size: ${rec.position_sizing.risk_percentage}% of portfolio`);
+            if (rec.position_sizing.leverage > 1) {
+                console.log(`• Leverage:  ${rec.position_sizing.leverage}x`);
+            }
+            console.log(`• Max Size:  ${rec.position_sizing.max_position_size}\n`);
+
+            console.log('Profit Targets:');
+            if (rec.exits.take_profit.targets.length > 0) {
+                rec.exits.take_profit.targets.forEach((target, i) => {
+                    console.log(`• TP${i + 1}: $${target.price.toFixed(2)} (${target.size})`);
+                });
+            } else {
+                console.log(`• Target: $${rec.exits.take_profit.price.toFixed(2)}`);
+            }
+            console.log('──────────────────\n');
+
+            // Technical Analysis Summary - Key indicators and patterns
+            if (analysis.analysis?.technical_factors?.length > 0) {
+                console.log('📈 TECHNICAL SIGNALS');
+                console.log('──────────────────');
+                analysis.analysis.technical_factors
+                    .sort((a, b) => {
+                        const strengthOrder = { 'STRONG': 0, 'MODERATE': 1, 'WEAK': 2 };
+                        return strengthOrder[a.strength] - strengthOrder[b.strength];
+                    })
+                    .forEach(factor => {
+                        const signal = factor.signal === 'BULLISH' ? '🟢' : 
+                                     factor.signal === 'BEARISH' ? '🔴' : '⚪';
+                        console.log(`${signal} ${factor.indicator} (${factor.strength})`);
+                        console.log(`   ${factor.description}`);
+                    });
+                console.log('──────────────────\n');
+            }
+
+            // Pattern Analysis
+            if (analysis.analysis?.breakout_analysis?.pattern) {
+                const breakout = analysis.analysis.breakout_analysis;
+                console.log('🔄 PATTERN ANALYSIS');
+                console.log('──────────────────');
+                console.log(`Pattern:      ${breakout.pattern}`);
+                console.log(`Confirmation: ${breakout.confirmation ? '✅ Yes' : '❌ No'}`);
+                console.log(`Target:       $${breakout.target_price.toFixed(2)}`);
+                console.log('──────────────────\n');
+            }
+
+            // Risk Factors - Important warnings and considerations
+            if (analysis.analysis?.risk_assessment?.risk_factors?.length > 0) {
+                console.log('⚠️ RISK FACTORS');
+                console.log('──────────────────');
+                analysis.analysis.risk_assessment.risk_factors
+                    .sort((a, b) => {
+                        const impactOrder = { 'HIGH': 0, 'MEDIUM': 1, 'LOW': 2 };
+                        return impactOrder[a.impact] - impactOrder[b.impact];
+                    })
+                    .forEach(risk => {
+                        const impact = risk.impact === 'HIGH' ? '🔴' :
+                                     risk.impact === 'MEDIUM' ? '🟡' : '🟢';
+                        console.log(`${impact} ${risk.factor}`);
+                        console.log(`   Mitigation: ${risk.mitigation}`);
+                    });
+                console.log('──────────────────\n');
+            }
+
+            // Trade Management Instructions
+            if (analysis.execution_strategy) {
+                console.log('📋 EXECUTION GUIDE');
+                console.log('──────────────────');
+                console.log('1. Entry Strategy:');
+                console.log(`   ${analysis.execution_strategy.entry_approach}\n`);
+                console.log('2. Exit Management:');
+                console.log(`   ${analysis.execution_strategy.exit_management}\n`);
+                console.log('3. Risk Management:');
+                console.log(`   ${analysis.execution_strategy.risk_management}`);
+                
+                if (analysis.execution_strategy.key_warnings?.length > 0) {
+                    console.log('\nKey Watch-outs:');
+                    analysis.execution_strategy.key_warnings.forEach(warning => {
+                        console.log(`❗ ${warning}`);
+                    });
+                }
+                console.log('──────────────────');
+            }
+        }
+
+        console.log('\n═══════════════════════════════\n');
     }
 }
+
+export { AnthropicAnalyzer };
