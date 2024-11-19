@@ -18,7 +18,7 @@ async function runTradingSystem() {
     const alphaVantage = new AlphaVantageService(process.env.ALPHA_VANTAGE_KEY);
     const marketData = new MarketDataService(alphaVantage);
     const technicalAnalysis = new TechnicalAnalysis();
-    const anthropic = new AnthropicAnalyzer(process.env.ANTHROPIC_API_KEY);
+    const anthropic = new AnthropicAnalyzer(process.env.ANTHROPIC_API_KEY, process.env.PERPLEXITY_API_KEY);
     const stopLoss = new StopLossService();
     const riskManager = new RiskManager();
     const patternRecognition = new PatternRecognitionService();

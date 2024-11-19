@@ -1,10 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { logger } from '../utils/logger.js';
+import { PerplexityAnalyzer } from './PerplexityAnalyzer.js';
 
 class AnthropicAnalyzer {
-    constructor(apiKey) {
+    constructor(apiKey, perplexityApiKey) {
         this.apiKey = apiKey;
         this.anthropic = new Anthropic({ apiKey });
+        this.perplexityAnalyzer = new PerplexityAnalyzer(perplexityApiKey);
     }
 
     safelyFormatNumber(number) {
@@ -15,8 +17,14 @@ class AnthropicAnalyzer {
     constructPrompt(data) {
         const marketData = data.marketData;
         const technicalData = data.technicalData;
+        const marketContext = data.marketContext;
         
-        return `As an expert trading analyst, analyze this market data with special attention to market sentiment, Bollinger Bands squeeze conditions, and potential breakouts. Focus on technical analysis, sentiment indicators, breakout patterns, and clear entry/exit points. Return ONLY a JSON object with the following structure, no other text:
+        return `As an expert trading analyst, analyze this market data and real-time market context to provide comprehensive trading recommendations. Pay special attention to:
+1. Technical Analysis: price patterns, indicators, and Bollinger Bands squeeze conditions
+2. Real-time Market Context: current news, sentiment, industry trends, and potential catalysts/risks
+3. Sentiment Integration: combine technical signals with real-time market sentiment
+
+Return ONLY a JSON object with the following structure, no other text:
 {
     "sentiment": {
         "overall": "BULLISH" | "BEARISH" | "NEUTRAL",
@@ -31,7 +39,7 @@ class AnthropicAnalyzer {
             "price_action": "<description of price action sentiment>",
             "volume_analysis": "<description of volume sentiment>",
             "momentum_analysis": "<description of momentum sentiment>",
-            "market_context": "<broader market sentiment analysis>"
+            "market_context": "<broader market sentiment analysis incorporating real-time news and events>"
         }
     },
     "analysis": {
@@ -129,12 +137,22 @@ ${JSON.stringify(marketData.slice(0, 5), null, 2)}
 Technical Indicators:
 ${JSON.stringify(technicalData, null, 2)}
 
-Provide a comprehensive analysis with specific, actionable trade recommendations based on market sentiment, technical analysis, breakout patterns, and risk management principles. Pay special attention to sentiment indicators and Bollinger Bands squeeze conditions as potential breakout setups.`;
+Real-time Market Context:
+${JSON.stringify(marketContext, null, 2)}
+
+Analyze both the technical data and real-time market context to provide comprehensive trading recommendations. Consider how current news, sentiment, and market conditions affect the technical signals.`;
     }
 
     async analyze(data) {
         try {
-            const prompt = this.constructPrompt(data);
+            // First get real-time market context from Perplexity
+            const marketContext = await this.perplexityAnalyzer.getMarketContext(data.symbol);
+            
+            // Enhance the prompt with real-time market context
+            const prompt = this.constructPrompt({
+                ...data,
+                marketContext // Add market context to the data
+            });
             
             const response = await this.anthropic.messages.create({
                 model: "claude-3-5-sonnet-latest",
@@ -144,7 +162,7 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
                     content: prompt
                 }],
                 temperature: 0.7,
-                system: "You are an expert trading analyst specializing in market sentiment analysis and technical breakout patterns. Provide detailed, accurate analysis with high attention to risk management."
+                system: "You are an expert trading analyst specializing in market sentiment analysis and technical breakout patterns. Analyze both technical indicators and real-time market context to provide comprehensive trading recommendations."
             });
 
             let analysis = response.content[0].text;
@@ -167,6 +185,10 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
 
                 // Add market data for display purposes
                 parsedAnalysis.marketData = data.marketData;
+                
+                // Add real-time context
+                parsedAnalysis.real_time_context = marketContext;
+
                 return parsedAnalysis;
             } catch (e) {
                 console.warn('Failed to parse Anthropic response as JSON:', e);
@@ -249,7 +271,8 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
                             entry_conditions: ["Wait for clear sentiment signals"]
                         }
                     },
-                    marketData: data.marketData
+                    marketData: data.marketData,
+                    real_time_context: marketContext
                 };
             }
         } catch (error) {
@@ -266,6 +289,57 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
 
         console.log('\n🎯 MARKET ANALYSIS REPORT');
         console.log('═══════════════════════════════════════════');
+
+        // Real-time Market Context Section
+        if (analysis.real_time_context) {
+            console.log('\n🔄 REAL-TIME MARKET CONTEXT');
+            console.log('───────────────────────────────────────');
+            
+            // Current News
+            if (analysis.real_time_context.current_news?.length > 0) {
+                console.log('\nRecent News:');
+                analysis.real_time_context.current_news.forEach(news => {
+                    const impactEmoji = {
+                        'POSITIVE': '📈',
+                        'NEGATIVE': '📉',
+                        'NEUTRAL': '➖'
+                    }[news.impact];
+                    console.log(`${impactEmoji} ${news.headline}`);
+                    console.log(`   Impact: ${news.impact} (${news.significance})`);
+                    console.log(`   ${news.summary}`);
+                });
+            }
+
+            // Market Sentiment
+            const sentiment = analysis.real_time_context.market_sentiment;
+            console.log('\nCurrent Market Sentiment:');
+            console.log(`${this.getSentimentEmoji(sentiment.overall)} ${sentiment.overall} (${sentiment.confidence}% confidence)`);
+            if (sentiment.key_factors?.length > 0) {
+                console.log('Key Factors:');
+                sentiment.key_factors.forEach(factor => console.log(`- ${factor}`));
+            }
+
+            // Industry Analysis
+            const industry = analysis.real_time_context.industry_analysis;
+            console.log('\nIndustry Analysis:');
+            console.log(`Trend: ${industry.trend}`);
+            if (industry.key_developments?.length > 0) {
+                console.log('Key Developments:');
+                industry.key_developments.forEach(dev => console.log(`- ${dev}`));
+            }
+
+            // Catalysts and Risks
+            const catalysts = analysis.real_time_context.catalysts_and_risks;
+            console.log('\nCatalysts and Risks:');
+            if (catalysts.upcoming_catalysts?.length > 0) {
+                console.log('Upcoming Catalysts:');
+                catalysts.upcoming_catalysts.forEach(catalyst => console.log(`📅 ${catalyst}`));
+            }
+            if (catalysts.potential_risks?.length > 0) {
+                console.log('Potential Risks:');
+                catalysts.potential_risks.forEach(risk => console.log(`⚠️ ${risk}`));
+            }
+        }
 
         // Sentiment Analysis Section
         console.log('\n📊 SENTIMENT ANALYSIS');
@@ -346,8 +420,8 @@ Provide a comprehensive analysis with specific, actionable trade recommendations
             if (trade.position_sizing) {
                 console.log('\nPosition Sizing:');
                 console.log(`Base Risk: ${trade.position_sizing.risk_percentage}%`);
-                if (analysis.analysis?.tradeSetup?.position_size_modifier) {
-                    console.log(`Sentiment Modifier: ${analysis.analysis.tradeSetup.position_size_modifier.toFixed(2)}x`);
+                if (analysis.execution_strategy?.sentiment_based_adjustments?.position_size_modifier) {
+                    console.log(`Sentiment Modifier: ${analysis.execution_strategy.sentiment_based_adjustments.position_size_modifier.toFixed(2)}x`);
                 }
                 console.log(`Max Position Size: ${trade.position_sizing.max_position_size}`);
             }
